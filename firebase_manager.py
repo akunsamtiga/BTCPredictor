@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 import logging
 import json
 from typing import Dict, List, Optional
+import pandas as pd
 from config import FIREBASE_CONFIG, FIREBASE_COLLECTIONS
 
 logger = logging.getLogger(__name__)
