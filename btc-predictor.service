@@ -1,0 +1,39 @@
+[Unit]
+Description=Bitcoin Price Predictor with ML and Firebase
+Documentation=https://github.com/your-repo/btc-predictor
+After=network.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=YOUR_USERNAME
+Group=YOUR_USERNAME
+WorkingDirectory=/home/YOUR_USERNAME/btc-predictor
+
+# Environment
+Environment="PATH=/home/YOUR_USERNAME/btc-predictor/venv/bin:/usr/local/bin:/usr/bin:/bin"
+Environment="PYTHONUNBUFFERED=1"
+
+# Execution
+ExecStart=/home/YOUR_USERNAME/btc-predictor/venv/bin/python3 scheduler.py
+
+# Restart policy
+Restart=always
+RestartSec=10
+StartLimitInterval=200
+StartLimitBurst=5
+
+# Logging
+StandardOutput=append:/home/YOUR_USERNAME/btc-predictor/logs/output.log
+StandardError=append:/home/YOUR_USERNAME/btc-predictor/logs/error.log
+
+# Security
+NoNewPrivileges=true
+PrivateTmp=true
+
+# Resource limits (optional)
+MemoryLimit=2G
+CPUQuota=150%
+
+[Install]
+WantedBy=multi-user.target
