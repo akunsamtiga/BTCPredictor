@@ -14,7 +14,7 @@ from config import FIREBASE_CONFIG, FIREBASE_COLLECTIONS
 
 logger = logging.getLogger(__name__)
 
-
+"tes"
 class FirebaseManager:
     """Manages all Firebase operations"""
     
