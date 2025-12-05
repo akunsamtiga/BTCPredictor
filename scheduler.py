@@ -1,6 +1,7 @@
 """
 Automation Scheduler for Bitcoin Predictor
 Handles continuous prediction and validation
+FIXED: Data fetching issue
 """
 
 import time
@@ -60,7 +61,7 @@ class PredictionScheduler:
             logger.info("🤖 TRAINING MODELS")
             logger.info("="*80)
             
-            # Fetch comprehensive data for training
+            # Fetch comprehensive data for training (use HOUR interval)
             df = get_bitcoin_data_realtime(days=30, interval='hour')
             
             if df is None or len(df) < 200:
@@ -71,7 +72,7 @@ class PredictionScheduler:
             df = add_technical_indicators(df)
             
             # Train
-            success = self.predictor.train_models(df, epochs=30, batch_size=32)
+            success = self.predictor.train_models(df, epochs=50, batch_size=32)
             
             if success:
                 # Save model performance to Firebase
@@ -87,7 +88,7 @@ class PredictionScheduler:
             return False
     
     def get_fresh_data(self, force_refresh=False):
-        """Get fresh Bitcoin data with caching"""
+        """Get fresh Bitcoin data with caching - FIXED VERSION"""
         try:
             # Use cache if available and recent (< 2 minutes old)
             if not force_refresh and self.data_cache is not None and self.data_cache_time:
@@ -99,35 +100,41 @@ class PredictionScheduler:
             # Fetch new data
             logger.info("📡 Fetching fresh data...")
             
-            # Use minute data for short timeframes, hour data for longer ones
-            max_timeframe = max(self.timeframes)
+            # FIXED: Always use HOUR interval with more days for reliability
+            # Hour data is more stable and available than minute data
+            df = get_bitcoin_data_realtime(days=14, interval='hour')
             
-            if max_timeframe <= 240:  # Up to 4 hours
-                df = get_bitcoin_data_realtime(days=3, interval='minute')
-            elif max_timeframe <= 1440:  # Up to 24 hours
-                df = get_bitcoin_data_realtime(days=7, interval='hour')
-            else:
-                df = get_bitcoin_data_realtime(days=14, interval='hour')
-            
-            if df is not None:
-                # Add indicators
-                df = add_technical_indicators(df)
-                
-                # Update cache
-                self.data_cache = df
-                self.data_cache_time = datetime.now()
-                
-                # Save to Firebase (limited to recent data)
-                self.firebase.save_raw_data(df, limit=100)
-                
-                logger.info(f"✅ Data refreshed: {len(df)} points")
-                return df
-            else:
-                logger.error("❌ Failed to fetch data")
+            if df is None:
+                logger.error("❌ Failed to fetch data from API")
                 return None
+            
+            # Check if we have enough data
+            if len(df) < 200:
+                logger.warning(f"⚠️ Got {len(df)} points, trying to fetch more...")
+                # Try with more days
+                df = get_bitcoin_data_realtime(days=30, interval='hour')
+                
+                if df is None or len(df) < 200:
+                    logger.error(f"❌ Still insufficient data: {len(df) if df is not None else 0} points")
+                    return None
+            
+            # Add indicators
+            df = add_technical_indicators(df)
+            
+            # Update cache
+            self.data_cache = df
+            self.data_cache_time = datetime.now()
+            
+            # Save to Firebase (limited to recent data)
+            self.firebase.save_raw_data(df, limit=100)
+            
+            logger.info(f"✅ Data refreshed: {len(df)} points")
+            return df
                 
         except Exception as e:
             logger.error(f"❌ Error getting fresh data: {e}")
+            import traceback
+            traceback.print_exc()
             return None
     
     def run_predictions(self):
@@ -148,6 +155,7 @@ class PredictionScheduler:
             logger.info(f"💰 Current BTC Price: ${current_price:,.2f}")
             
             # Run predictions for each timeframe
+            predictions_made = 0
             for timeframe in self.timeframes:
                 try:
                     # Check if we should predict for this timeframe
@@ -157,10 +165,10 @@ class PredictionScheduler:
                         min_interval = min(timeframe * 60 * 0.2, 300)  # 20% of timeframe or 5 min max
                         
                         if time_since_last < min_interval:
-                            logger.debug(f"⏭️  Skipping {timeframe}min (too soon)")
+                            logger.debug(f"⏭️ Skipping {timeframe}min (too soon)")
                             continue
                     
-                    logger.info(f"\n⏱️  Predicting for {timeframe} minutes...")
+                    logger.info(f"\n⏱️ Predicting for {timeframe} minutes...")
                     
                     # Make prediction
                     prediction = self.predictor.predict(df, timeframe)
@@ -174,6 +182,7 @@ class PredictionScheduler:
                         
                         if doc_id:
                             self.last_prediction_time[timeframe] = datetime.now()
+                            predictions_made += 1
                             logger.info(f"✅ Prediction saved: {doc_id}")
                         else:
                             logger.warning("⚠️ Failed to save prediction")
@@ -185,7 +194,7 @@ class PredictionScheduler:
                     continue
             
             logger.info("\n" + "="*80)
-            logger.info("✅ Prediction cycle completed")
+            logger.info(f"✅ Prediction cycle completed - {predictions_made} predictions made")
             logger.info("="*80 + "\n")
             
         except Exception as e:
@@ -241,7 +250,8 @@ class PredictionScheduler:
             logger.info(f"✅ Validated {validated_count}/{len(predictions)} predictions\n")
             
             # Update statistics
-            self.update_statistics()
+            if validated_count > 0:
+                self.update_statistics()
             
         except Exception as e:
             logger.error(f"❌ Error validating predictions: {e}")
@@ -282,7 +292,7 @@ class PredictionScheduler:
     def cleanup_old_data(self):
         """Periodic cleanup of old data"""
         try:
-            logger.info("🗑️  Running cleanup...")
+            logger.info("🗑️ Running cleanup...")
             self.firebase.cleanup_old_data(days=30)
             logger.info("✅ Cleanup completed\n")
         except Exception as e:
