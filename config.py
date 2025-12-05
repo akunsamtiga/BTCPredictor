@@ -1,26 +1,35 @@
 """
 Configuration file for Bitcoin Predictor Automation
+Enhanced with error handling and retry mechanisms
 """
 
 # Firebase Configuration
 FIREBASE_CONFIG = {
-    'credentials_path': 'service-account.json',  # Path to your Firebase credentials
-    'database_url': 'https://stc-autotrade-18f67.firebaseio.com'
+    'credentials_path': 'service-account.json',
+    'database_url': 'https://stc-autotrade-18f67.firebaseio.com',
+    'max_retries': 5,
+    'retry_delay': 5,  # seconds
+    'connection_timeout': 30
 }
 
 # Prediction Configuration
 PREDICTION_CONFIG = {
-    'timeframes': [15, 30, 60, 240, 720, 1440],  # Minutes: 15min, 30min, 1h, 4h, 12h, 24h
-    'prediction_interval': 300,  # Run prediction every 5 minutes (300 seconds)
-    'data_fetch_interval': 60,  # Fetch new data every 60 seconds
-    'validation_check_interval': 60,  # Check prediction results every 60 seconds
+    'timeframes': [15, 30, 60, 240, 720, 1440],
+    'prediction_interval': 300,  # 5 minutes
+    'data_fetch_interval': 60,
+    'validation_check_interval': 60,
+    'max_consecutive_failures': 5,  # Stop after 5 consecutive failures
+    'failure_backoff_multiplier': 2,  # Exponential backoff
+    'health_check_interval': 300  # 5 minutes
 }
 
 # Data Configuration
 DATA_CONFIG = {
-    'cryptocompare_api_key': "ffb687da5df95e3406d379e05a57507512343439f68e01476dd6a97894818d3b",  # Optional: Add your API key for higher rate limits
-    'data_retention_days': 30,  # Keep data for 30 days
-    'min_data_points': 200,  # Minimum data points required for prediction
+    'cryptocompare_api_key': "ffb687da5df95e3406d379e05a57507512343439f68e01476dd6a97894818d3b",
+    'data_retention_days': 30,
+    'min_data_points': 200,
+    'cache_ttl': 120,  # 2 minutes
+    'api_fallback_intervals': ['hour', 'day'],  # Fallback if minute fails
 }
 
 # Model Configuration
@@ -41,23 +50,40 @@ MODEL_CONFIG = {
         'learning_rate': 0.1,
         'max_depth': 5
     },
-    'auto_retrain_interval': 86400,  # Retrain models every 24 hours
-    'model_save_path': 'models/'
+    'auto_retrain_interval': 86400,
+    'model_save_path': 'models/',
+    'backup_path': 'models_backup/'
 }
 
 # Logging Configuration
 LOGGING_CONFIG = {
     'log_file': 'btc_predictor_automation.log',
+    'error_log_file': 'btc_predictor_errors.log',
     'max_log_size': 10 * 1024 * 1024,  # 10 MB
     'backup_count': 5,
-    'log_level': 'INFO'
+    'log_level': 'INFO',
+    'console_output': True
 }
 
 # API Configuration
 API_CONFIG = {
     'timeout': 15,
-    'max_retries': 3,
-    'retry_delay': 2
+    'max_retries': 5,
+    'retry_delay': 2,
+    'exponential_backoff': True,
+    'rate_limit_delay': 1,  # seconds between requests
+    'connection_pool_size': 10
+}
+
+# System Health Configuration
+HEALTH_CONFIG = {
+    'max_memory_mb': 2048,  # Alert if memory exceeds 2GB
+    'max_cpu_percent': 80,
+    'disk_space_min_gb': 1,
+    'enable_watchdog': True,
+    'watchdog_timeout': 600,  # 10 minutes
+    'auto_restart_on_error': True,
+    'max_auto_restarts': 3
 }
 
 # Firebase Collections
@@ -66,5 +92,15 @@ FIREBASE_COLLECTIONS = {
     'validation': 'prediction_validation',
     'statistics': 'prediction_statistics',
     'raw_data': 'bitcoin_data',
-    'model_performance': 'model_performance'
+    'model_performance': 'model_performance',
+    'system_health': 'system_health',
+    'error_logs': 'error_logs'
+}
+
+# VPS Optimization
+VPS_CONFIG = {
+    'enable_memory_optimization': True,
+    'clear_tensorflow_session': True,
+    'garbage_collection_interval': 3600,  # 1 hour
+    'enable_swap_monitoring': True
 }

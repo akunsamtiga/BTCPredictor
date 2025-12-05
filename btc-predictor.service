@@ -1,39 +1,52 @@
 [Unit]
-Description=Bitcoin Price Predictor with ML and Firebase
-Documentation=https://github.com/your-repo/btc-predictor
-After=network.target network-online.target
+Description=Bitcoin Price Predictor Automation Service
+After=network-online.target
 Wants=network-online.target
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
-User=YOUR_USERNAME
-Group=YOUR_USERNAME
-WorkingDirectory=/home/YOUR_USERNAME/btc-predictor
-
-# Environment
-Environment="PATH=/home/YOUR_USERNAME/btc-predictor/venv/bin:/usr/local/bin:/usr/bin:/bin"
+User=stcautotrade
+Group=stcautotrade
+WorkingDirectory=/home/stcautotrade/btc-predictor
+Environment="PATH=/home/stcautotrade/btc-predictor/venv/bin:/usr/local/bin:/usr/bin:/bin"
 Environment="PYTHONUNBUFFERED=1"
 
-# Execution
-ExecStart=/home/YOUR_USERNAME/btc-predictor/venv/bin/python3 scheduler.py
+# Main command
+ExecStart=/home/stcautotrade/btc-predictor/venv/bin/python3 scheduler.py
 
-# Restart policy
+# Auto restart configuration
 Restart=always
-RestartSec=10
-StartLimitInterval=200
+RestartSec=30
+
+# Restart limits
 StartLimitBurst=5
+StartLimitIntervalSec=600
+
+# Timeout settings
+TimeoutStartSec=300
+TimeoutStopSec=60
+
+# Resource limits
+MemoryMax=2G
+MemoryHigh=1.5G
+CPUQuota=80%
 
 # Logging
-StandardOutput=append:/home/YOUR_USERNAME/btc-predictor/logs/output.log
-StandardError=append:/home/YOUR_USERNAME/btc-predictor/logs/error.log
+StandardOutput=append:/home/stcautotrade/btc-predictor/logs/service_output.log
+StandardError=append:/home/stcautotrade/btc-predictor/logs/service_error.log
+SyslogIdentifier=btc-predictor
 
-# Security
+# Security settings
 NoNewPrivileges=true
 PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/stcautotrade/btc-predictor
 
-# Resource limits (optional)
-MemoryLimit=2G
-CPUQuota=150%
+# Watchdog (auto-restart if service hangs)
+WatchdogSec=600
+NotifyAccess=all
 
 [Install]
 WantedBy=multi-user.target

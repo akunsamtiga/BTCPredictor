@@ -1,6 +1,6 @@
 """
 Firebase Manager for Bitcoin Predictor
-Handles all Firebase operations including saving predictions, validation, and statistics
+Enhanced with auto-reconnect and error handling
 """
 
 import firebase_admin
@@ -8,54 +8,103 @@ from firebase_admin import credentials, firestore, db
 from datetime import datetime, timedelta
 import logging
 import json
+import time
 from typing import Dict, List, Optional
 import pandas as pd
 from config import FIREBASE_CONFIG, FIREBASE_COLLECTIONS
 
 logger = logging.getLogger(__name__)
 
-"tes"
 class FirebaseManager:
-    """Manages all Firebase operations"""
+    """Manages all Firebase operations with auto-reconnect"""
     
     def __init__(self):
         """Initialize Firebase connection"""
         self.db = None
         self.firestore_db = None
+        self.connected = False
+        self.last_connection_attempt = None
+        self.connection_failures = 0
         self._initialize_firebase()
     
-    def _initialize_firebase(self):
-        """Initialize Firebase Admin SDK"""
-        try:
-            # Check if already initialized
-            if not firebase_admin._apps:
-                cred = credentials.Certificate(FIREBASE_CONFIG['credentials_path'])
-                firebase_admin.initialize_app(cred, {
-                    'databaseURL': FIREBASE_CONFIG['database_url']
-                })
-            
-            self.db = db
-            self.firestore_db = firestore.client()
-            logger.info("✅ Firebase initialized successfully")
-            
-        except Exception as e:
-            logger.error(f"❌ Failed to initialize Firebase: {e}")
-            raise
+    def _initialize_firebase(self, retry=True):
+        """Initialize Firebase Admin SDK with retry logic"""
+        max_retries = FIREBASE_CONFIG['max_retries']
+        retry_delay = FIREBASE_CONFIG['retry_delay']
+        
+        for attempt in range(max_retries):
+            try:
+                # Check if already initialized
+                if not firebase_admin._apps:
+                    cred = credentials.Certificate(FIREBASE_CONFIG['credentials_path'])
+                    firebase_admin.initialize_app(cred, {
+                        'databaseURL': FIREBASE_CONFIG['database_url']
+                    })
+                
+                self.db = db
+                self.firestore_db = firestore.client()
+                self.connected = True
+                self.connection_failures = 0
+                self.last_connection_attempt = datetime.now()
+                
+                logger.info("✅ Firebase initialized successfully")
+                return True
+                
+            except FileNotFoundError:
+                logger.error(f"❌ Firebase credentials file not found: {FIREBASE_CONFIG['credentials_path']}")
+                raise
+            except Exception as e:
+                self.connection_failures += 1
+                logger.warning(f"⚠️ Firebase connection attempt {attempt + 1}/{max_retries} failed: {e}")
+                
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay * (2 ** attempt))  # Exponential backoff
+                else:
+                    logger.error(f"❌ Failed to initialize Firebase after {max_retries} attempts")
+                    if not retry:
+                        raise
+                    return False
+        
+        return False
+    
+    def _ensure_connection(self):
+        """Ensure Firebase connection is active"""
+        if not self.connected:
+            logger.warning("⚠️ Firebase not connected, attempting reconnection...")
+            return self._initialize_firebase(retry=True)
+        return True
+    
+    def _execute_with_retry(self, operation, *args, **kwargs):
+        """Execute Firebase operation with retry logic"""
+        max_retries = 3
+        
+        for attempt in range(max_retries):
+            try:
+                if not self._ensure_connection():
+                    raise ConnectionError("Firebase not connected")
+                
+                result = operation(*args, **kwargs)
+                return result, None
+                
+            except Exception as e:
+                logger.warning(f"⚠️ Operation failed (attempt {attempt + 1}/{max_retries}): {e}")
+                
+                if attempt < max_retries - 1:
+                    time.sleep(2 ** attempt)
+                    # Try to reconnect
+                    self.connected = False
+                    self._ensure_connection()
+                else:
+                    logger.error(f"❌ Operation failed after {max_retries} attempts: {e}")
+                    return None, e
+        
+        return None, Exception("Max retries exceeded")
     
     def save_prediction(self, prediction: Dict) -> Optional[str]:
-        """
-        Save prediction to Firebase
-        
-        Args:
-            prediction: Dictionary containing prediction data
-            
-        Returns:
-            Document ID if successful, None otherwise
-        """
-        try:
+        """Save prediction to Firebase with retry"""
+        def _save():
             collection = self.firestore_db.collection(FIREBASE_COLLECTIONS['predictions'])
             
-            # Prepare data
             doc_data = {
                 'timestamp': firestore.SERVER_TIMESTAMP,
                 'prediction_time': datetime.now().isoformat(),
@@ -75,7 +124,6 @@ class FirebaseManager:
                 'actual_price': None,
             }
             
-            # Add ML specific data if available
             if 'model_agreement' in prediction:
                 doc_data.update({
                     'model_agreement': prediction['model_agreement'],
@@ -85,32 +133,25 @@ class FirebaseManager:
                     'rf_confidence': float(prediction['rf_confidence']),
                 })
             
-            # Save to Firestore
             doc_ref = collection.add(doc_data)
-            doc_id = doc_ref[1].id
-            
-            logger.info(f"✅ Prediction saved: {doc_id} (Timeframe: {prediction['timeframe_minutes']}min)")
-            return doc_id
-            
-        except Exception as e:
-            logger.error(f"❌ Error saving prediction: {e}")
+            return doc_ref[1].id
+        
+        result, error = self._execute_with_retry(_save)
+        
+        if result:
+            logger.info(f"✅ Prediction saved: {result} (Timeframe: {prediction['timeframe_minutes']}min)")
+            return result
+        else:
+            logger.error(f"❌ Failed to save prediction: {error}")
+            self._log_error("save_prediction", error)
             return None
     
     def save_raw_data(self, df, limit: int = 100):
-        """
-        Save raw Bitcoin data to Firebase (recent data only)
-        
-        Args:
-            df: DataFrame containing Bitcoin data
-            limit: Maximum number of recent records to save
-        """
-        try:
+        """Save raw Bitcoin data to Firebase"""
+        def _save():
             collection = self.firestore_db.collection(FIREBASE_COLLECTIONS['raw_data'])
-            
-            # Get recent data
             recent_data = df.head(limit)
             
-            # Batch write
             batch = self.firestore_db.batch()
             count = 0
             
@@ -127,7 +168,6 @@ class FirebaseManager:
                     'volume': float(row['volume']),
                 }
                 
-                # Add technical indicators if available
                 if 'rsi' in row and not pd.isna(row['rsi']):
                     data['rsi'] = float(row['rsi'])
                 if 'macd' in row and not pd.isna(row['macd']):
@@ -136,31 +176,26 @@ class FirebaseManager:
                 batch.set(doc_ref, data, merge=True)
                 count += 1
                 
-                # Commit batch every 500 operations
                 if count % 500 == 0:
                     batch.commit()
                     batch = self.firestore_db.batch()
             
-            # Commit remaining
             if count % 500 != 0:
                 batch.commit()
             
-            logger.info(f"✅ Saved {count} raw data points to Firebase")
-            
-        except Exception as e:
-            logger.error(f"❌ Error saving raw data: {e}")
+            return count
+        
+        result, error = self._execute_with_retry(_save)
+        
+        if result:
+            logger.info(f"✅ Saved {result} raw data points to Firebase")
+        else:
+            logger.warning(f"⚠️ Failed to save raw data: {error}")
     
     def get_unvalidated_predictions(self) -> List[Dict]:
-        """
-        Get all predictions that haven't been validated yet
-        
-        Returns:
-            List of prediction documents
-        """
-        try:
+        """Get all predictions that haven't been validated yet"""
+        def _get():
             collection = self.firestore_db.collection(FIREBASE_COLLECTIONS['predictions'])
-            
-            # Query unvalidated predictions where target time has passed
             now = datetime.now()
             
             query = collection.where('validated', '==', False).limit(100)
@@ -171,44 +206,33 @@ class FirebaseManager:
                 data = doc.to_dict()
                 data['doc_id'] = doc.id
                 
-                # Check if target time has passed
                 target_time = datetime.fromisoformat(data['target_time'])
                 if target_time <= now:
                     predictions.append(data)
             
-            logger.info(f"📋 Found {len(predictions)} predictions ready for validation")
             return predictions
-            
-        except Exception as e:
-            logger.error(f"❌ Error getting unvalidated predictions: {e}")
+        
+        result, error = self._execute_with_retry(_get)
+        
+        if result is not None:
+            logger.info(f"📋 Found {len(result)} predictions ready for validation")
+            return result
+        else:
+            logger.warning(f"⚠️ Failed to get unvalidated predictions: {error}")
             return []
     
     def validate_prediction(self, doc_id: str, actual_price: float, 
                           predicted_price: float, trend: str) -> bool:
-        """
-        Validate a prediction and mark as win/lose
-        
-        Args:
-            doc_id: Document ID of the prediction
-            actual_price: Actual price at target time
-            predicted_price: Predicted price
-            trend: Predicted trend (CALL/PUT)
-            
-        Returns:
-            True if validation successful
-        """
-        try:
-            # Determine if prediction was correct
+        """Validate a prediction and mark as win/lose"""
+        def _validate():
             predicted_direction = 'up' if 'CALL' in trend.upper() else 'down'
             actual_direction = 'up' if actual_price >= predicted_price else 'down'
             
             is_win = predicted_direction == actual_direction
             
-            # Calculate error metrics
             price_error = abs(actual_price - predicted_price)
             price_error_pct = (price_error / predicted_price) * 100
             
-            # Update prediction document
             doc_ref = self.firestore_db.collection(FIREBASE_COLLECTIONS['predictions']).document(doc_id)
             doc_ref.update({
                 'validated': True,
@@ -220,7 +244,6 @@ class FirebaseManager:
                 'direction_correct': is_win
             })
             
-            # Save to validation collection for analytics
             validation_data = {
                 'timestamp': firestore.SERVER_TIMESTAMP,
                 'prediction_id': doc_id,
@@ -233,31 +256,23 @@ class FirebaseManager:
             
             self.firestore_db.collection(FIREBASE_COLLECTIONS['validation']).add(validation_data)
             
-            result_emoji = "✅" if is_win else "❌"
-            logger.info(f"{result_emoji} Validation: {doc_id} - {validation_data['result']}")
-            
+            return is_win
+        
+        result, error = self._execute_with_retry(_validate)
+        
+        if result is not None:
+            result_emoji = "✅" if result else "❌"
+            logger.info(f"{result_emoji} Validation: {doc_id} - {'WIN' if result else 'LOSE'}")
             return True
-            
-        except Exception as e:
-            logger.error(f"❌ Error validating prediction: {e}")
+        else:
+            logger.error(f"❌ Failed to validate prediction: {error}")
             return False
     
     def get_statistics(self, timeframe_minutes: Optional[int] = None, 
                       days: int = 7) -> Dict:
-        """
-        Get prediction statistics
-        
-        Args:
-            timeframe_minutes: Filter by specific timeframe
-            days: Number of days to analyze
-            
-        Returns:
-            Dictionary with statistics
-        """
-        try:
+        """Get prediction statistics"""
+        def _get_stats():
             collection = self.firestore_db.collection(FIREBASE_COLLECTIONS['predictions'])
-            
-            # Query validated predictions from last N days
             cutoff_date = datetime.now() - timedelta(days=days)
             
             query = collection.where('validated', '==', True)
@@ -275,7 +290,6 @@ class FirebaseManager:
             for doc in docs:
                 data = doc.to_dict()
                 
-                # Check if within date range
                 if 'prediction_time' in data:
                     pred_time = datetime.fromisoformat(data['prediction_time'])
                     if pred_time < cutoff_date:
@@ -293,12 +307,11 @@ class FirebaseManager:
                 if 'price_error_pct' in data:
                     total_error_pct += data['price_error_pct']
             
-            # Calculate statistics
             win_rate = (wins / total * 100) if total > 0 else 0
             avg_error = total_error / total if total > 0 else 0
             avg_error_pct = total_error_pct / total if total > 0 else 0
             
-            stats = {
+            return {
                 'timeframe_minutes': timeframe_minutes,
                 'period_days': days,
                 'total_predictions': total,
@@ -309,59 +322,93 @@ class FirebaseManager:
                 'avg_error_pct': round(avg_error_pct, 2),
                 'last_updated': datetime.now().isoformat()
             }
-            
-            logger.info(f"📊 Statistics: Win rate {win_rate:.1f}% ({wins}/{total})")
-            
-            return stats
-            
-        except Exception as e:
-            logger.error(f"❌ Error getting statistics: {e}")
+        
+        result, error = self._execute_with_retry(_get_stats)
+        
+        if result:
+            logger.info(f"📊 Statistics: Win rate {result['win_rate']:.1f}% ({result['wins']}/{result['total_predictions']})")
+            return result
+        else:
+            logger.warning(f"⚠️ Failed to get statistics: {error}")
             return {}
     
     def save_statistics(self, stats: Dict) -> bool:
         """Save statistics to Firebase"""
-        try:
+        def _save():
             collection = self.firestore_db.collection(FIREBASE_COLLECTIONS['statistics'])
-            
             doc_id = f"stats_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
             collection.document(doc_id).set(stats)
-            
-            logger.info(f"✅ Statistics saved: {doc_id}")
+            return doc_id
+        
+        result, error = self._execute_with_retry(_save)
+        
+        if result:
+            logger.info(f"✅ Statistics saved: {result}")
             return True
-            
-        except Exception as e:
-            logger.error(f"❌ Error saving statistics: {e}")
+        else:
+            logger.warning(f"⚠️ Failed to save statistics: {error}")
             return False
     
     def save_model_performance(self, metrics: Dict) -> bool:
         """Save model performance metrics"""
-        try:
+        def _save():
             collection = self.firestore_db.collection(FIREBASE_COLLECTIONS['model_performance'])
-            
             doc_data = {
                 'timestamp': firestore.SERVER_TIMESTAMP,
                 'datetime': datetime.now().isoformat(),
                 'metrics': metrics
             }
-            
             collection.add(doc_data)
+            return True
+        
+        result, error = self._execute_with_retry(_save)
+        
+        if result:
             logger.info("✅ Model performance saved")
             return True
-            
-        except Exception as e:
-            logger.error(f"❌ Error saving model performance: {e}")
+        else:
+            logger.warning(f"⚠️ Failed to save model performance: {error}")
             return False
+    
+    def save_system_health(self, health_data: Dict) -> bool:
+        """Save system health metrics"""
+        def _save():
+            collection = self.firestore_db.collection(FIREBASE_COLLECTIONS['system_health'])
+            doc_data = {
+                'timestamp': firestore.SERVER_TIMESTAMP,
+                'datetime': datetime.now().isoformat(),
+                **health_data
+            }
+            collection.add(doc_data)
+            return True
+        
+        result, error = self._execute_with_retry(_save)
+        return result is not None
+    
+    def _log_error(self, operation: str, error: Exception):
+        """Log error to Firebase"""
+        try:
+            collection = self.firestore_db.collection(FIREBASE_COLLECTIONS['error_logs'])
+            error_data = {
+                'timestamp': firestore.SERVER_TIMESTAMP,
+                'datetime': datetime.now().isoformat(),
+                'operation': operation,
+                'error_type': type(error).__name__,
+                'error_message': str(error),
+            }
+            collection.add(error_data)
+        except:
+            pass  # Silent fail for error logging
     
     def cleanup_old_data(self, days: int = 30):
         """Clean up old data from Firebase"""
-        try:
+        def _cleanup():
             cutoff_date = datetime.now() - timedelta(days=days)
+            total_deleted = 0
             
             for collection_name in [FIREBASE_COLLECTIONS['raw_data'], 
                                    FIREBASE_COLLECTIONS['predictions']]:
                 collection = self.firestore_db.collection(collection_name)
-                
-                # This is a simplified cleanup - in production, use batch deletes
                 old_docs = collection.where('timestamp', '<', cutoff_date).limit(100).stream()
                 
                 batch = self.firestore_db.batch()
@@ -373,13 +420,19 @@ class FirebaseManager:
                 
                 if count > 0:
                     batch.commit()
-                    logger.info(f"🗑️  Cleaned up {count} old documents from {collection_name}")
+                    total_deleted += count
+                    logger.info(f"🗑️ Cleaned up {count} old documents from {collection_name}")
             
-        except Exception as e:
-            logger.error(f"❌ Error cleaning up old data: {e}")
+            return total_deleted
+        
+        result, error = self._execute_with_retry(_cleanup)
+        
+        if result is not None:
+            logger.info(f"✅ Cleanup completed: {result} documents deleted")
+        else:
+            logger.warning(f"⚠️ Cleanup failed: {error}")
 
 
-# Convenience function
 def get_firebase_manager() -> FirebaseManager:
     """Get or create Firebase manager instance"""
     return FirebaseManager()
