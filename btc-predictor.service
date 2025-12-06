@@ -1,5 +1,6 @@
 [Unit]
-Description=Bitcoin Price Predictor Automation Service
+Description=Bitcoin Price Predictor with ML and Firebase
+Documentation=https://github.com/akunsamtiga/BTCPredictor
 After=network-online.target
 Wants=network-online.target
 StartLimitIntervalSec=0
@@ -11,12 +12,13 @@ Group=stcautotrade
 WorkingDirectory=/home/stcautotrade/btc-predictor
 Environment="PATH=/home/stcautotrade/btc-predictor/venv/bin:/usr/local/bin:/usr/bin:/bin"
 Environment="PYTHONUNBUFFERED=1"
+Environment="PYTHONPATH=/home/stcautotrade/btc-predictor"
 
 # Main command
-ExecStart=/home/stcautotrade/btc-predictor/venv/bin/python3 scheduler.py
+ExecStart=/bin/bash -c 'cd /home/stcautotrade/btc-predictor && source venv/bin/activate && exec python3 scheduler.py 2>&1 | tee -a logs/service.log'
 
-# Auto restart configuration
-Restart=always
+# Restart only on failure
+Restart=on-failure
 RestartSec=30
 
 # Restart limits
@@ -33,20 +35,16 @@ MemoryHigh=1.5G
 CPUQuota=80%
 
 # Logging
-StandardOutput=append:/home/stcautotrade/btc-predictor/logs/service_output.log
-StandardError=append:/home/stcautotrade/btc-predictor/logs/service_error.log
+StandardOutput=journal
+StandardError=journal
 SyslogIdentifier=btc-predictor
 
-# Security settings
+# Security
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=read-only
 ReadWritePaths=/home/stcautotrade/btc-predictor
-
-# Watchdog (auto-restart if service hangs)
-WatchdogSec=600
-NotifyAccess=all
 
 [Install]
 WantedBy=multi-user.target

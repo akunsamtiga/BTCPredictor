@@ -18,9 +18,9 @@ PREDICTION_CONFIG = {
     'prediction_interval': 300,  # 5 minutes
     'data_fetch_interval': 60,
     'validation_check_interval': 60,
+    'health_check_interval': 300,  # 5 minutes - FIXED
     'max_consecutive_failures': 5,  # Stop after 5 consecutive failures
-    'failure_backoff_multiplier': 2,  # Exponential backoff
-    'health_check_interval': 300  # 5 minutes
+    'failure_backoff_multiplier': 2  # Exponential backoff
 }
 
 # Data Configuration
@@ -83,7 +83,8 @@ HEALTH_CONFIG = {
     'enable_watchdog': True,
     'watchdog_timeout': 600,  # 10 minutes
     'auto_restart_on_error': True,
-    'max_auto_restarts': 3
+    'max_auto_restarts': 3,
+    'health_check_interval': 300  # 5 minutes - FIXED
 }
 
 # Firebase Collections
