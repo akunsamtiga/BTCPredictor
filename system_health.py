@@ -1,6 +1,7 @@
 """
 System Health Monitoring for VPS
 Monitors CPU, memory, disk, and network connectivity
+ALL TIMESTAMPS IN WIB (UTC+7)
 """
 
 import psutil
@@ -10,6 +11,7 @@ import gc
 from datetime import datetime
 from typing import Dict, Optional
 from config import HEALTH_CONFIG, VPS_CONFIG
+from timezone_utils import get_local_now, now_iso_wib
 
 logger = logging.getLogger(__name__)
 
@@ -171,7 +173,7 @@ class SystemHealthMonitor:
     def get_full_health_report(self) -> Dict:
         """Get comprehensive health report"""
         report = {
-            'timestamp': datetime.now().isoformat(),
+            'timestamp': now_iso_wib(),  # WIB
             'memory': self.check_memory(),
             'cpu': self.check_cpu(),
             'disk': self.check_disk(),
@@ -194,7 +196,7 @@ class SystemHealthMonitor:
         else:
             report['overall_status'] = 'HEALTHY'
         
-        self.last_check = datetime.now()
+        self.last_check = get_local_now()
         
         return report
     

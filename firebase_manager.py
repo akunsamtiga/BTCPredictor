@@ -1,6 +1,7 @@
 """
 Firebase Manager for Bitcoin Predictor
 Enhanced with auto-reconnect and error handling
+ALL TIMESTAMPS IN WIB (UTC+7)
 """
 
 import firebase_admin
@@ -12,6 +13,15 @@ import time
 from typing import Dict, List, Optional
 import pandas as pd
 from config import FIREBASE_CONFIG, FIREBASE_COLLECTIONS
+from timezone_utils import (
+    get_local_now, 
+    get_local_isoformat, 
+    prepare_firebase_timestamp,
+    add_minutes_local,
+    format_firebase_timestamp,
+    parse_iso_to_local,
+    now_iso_wib
+)
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +55,7 @@ class FirebaseManager:
                 self.firestore_db = firestore.client()
                 self.connected = True
                 self.connection_failures = 0
-                self.last_connection_attempt = datetime.now()
+                self.last_connection_attempt = get_local_now()
                 
                 logger.info("✅ Firebase initialized successfully")
                 return True
@@ -58,7 +68,7 @@ class FirebaseManager:
                 logger.warning(f"⚠️ Firebase connection attempt {attempt + 1}/{max_retries} failed: {e}")
                 
                 if attempt < max_retries - 1:
-                    time.sleep(retry_delay * (2 ** attempt))  # Exponential backoff
+                    time.sleep(retry_delay * (2 ** attempt))
                 else:
                     logger.error(f"❌ Failed to initialize Firebase after {max_retries} attempts")
                     if not retry:
@@ -91,7 +101,6 @@ class FirebaseManager:
                 
                 if attempt < max_retries - 1:
                     time.sleep(2 ** attempt)
-                    # Try to reconnect
                     self.connected = False
                     self._ensure_connection()
                 else:
@@ -101,13 +110,17 @@ class FirebaseManager:
         return None, Exception("Max retries exceeded")
     
     def save_prediction(self, prediction: Dict) -> Optional[str]:
-        """Save prediction to Firebase with retry"""
+        """Save prediction to Firebase with retry - ALL TIMES IN WIB"""
         def _save():
             collection = self.firestore_db.collection(FIREBASE_COLLECTIONS['predictions'])
             
+            # All times in WIB
+            now_wib = get_local_now()
+            target_time_wib = add_minutes_local(now_wib, prediction['timeframe_minutes'])
+            
             doc_data = {
-                'timestamp': firestore.SERVER_TIMESTAMP,
-                'prediction_time': datetime.now().isoformat(),
+                'timestamp': now_iso_wib(),  # WIB ISO string
+                'prediction_time': prepare_firebase_timestamp(now_wib),  # WIB
                 'timeframe_minutes': prediction['timeframe_minutes'],
                 'current_price': float(prediction['current_price']),
                 'predicted_price': float(prediction['predicted_price']),
@@ -118,7 +131,7 @@ class FirebaseManager:
                 'trend': prediction['trend'],
                 'confidence': float(prediction['confidence']),
                 'method': prediction['method'],
-                'target_time': (datetime.now() + timedelta(minutes=prediction['timeframe_minutes'])).isoformat(),
+                'target_time': prepare_firebase_timestamp(target_time_wib),  # WIB
                 'validated': False,
                 'validation_result': None,
                 'actual_price': None,
@@ -147,7 +160,7 @@ class FirebaseManager:
             return None
     
     def save_raw_data(self, df, limit: int = 100):
-        """Save raw Bitcoin data to Firebase"""
+        """Save raw Bitcoin data to Firebase - timestamps in WIB"""
         def _save():
             collection = self.firestore_db.collection(FIREBASE_COLLECTIONS['raw_data'])
             recent_data = df.head(limit)
@@ -159,7 +172,7 @@ class FirebaseManager:
                 doc_ref = collection.document(f"btc_{row['datetime'].strftime('%Y%m%d_%H%M%S')}")
                 
                 data = {
-                    'timestamp': firestore.SERVER_TIMESTAMP,
+                    'timestamp': now_iso_wib(),
                     'datetime': row['datetime'].isoformat(),
                     'price': float(row['price']),
                     'open': float(row['open']),
@@ -196,7 +209,7 @@ class FirebaseManager:
         """Get all predictions that haven't been validated yet"""
         def _get():
             collection = self.firestore_db.collection(FIREBASE_COLLECTIONS['predictions'])
-            now = datetime.now()
+            now_wib = get_local_now()
             
             query = collection.where('validated', '==', False).limit(100)
             docs = query.stream()
@@ -206,9 +219,14 @@ class FirebaseManager:
                 data = doc.to_dict()
                 data['doc_id'] = doc.id
                 
-                target_time = datetime.fromisoformat(data['target_time'])
-                if target_time <= now:
-                    predictions.append(data)
+                # Parse target time (stored as WIB ISO)
+                target_time_str = data.get('target_time')
+                if target_time_str:
+                    target_time_wib = parse_iso_to_local(target_time_str)
+                    
+                    # Check if time has passed
+                    if target_time_wib <= now_wib:
+                        predictions.append(data)
             
             return predictions
         
@@ -236,7 +254,7 @@ class FirebaseManager:
             doc_ref = self.firestore_db.collection(FIREBASE_COLLECTIONS['predictions']).document(doc_id)
             doc_ref.update({
                 'validated': True,
-                'validation_time': firestore.SERVER_TIMESTAMP,
+                'validation_time': now_iso_wib(),  # WIB
                 'actual_price': float(actual_price),
                 'validation_result': 'WIN' if is_win else 'LOSE',
                 'price_error': float(price_error),
@@ -245,7 +263,7 @@ class FirebaseManager:
             })
             
             validation_data = {
-                'timestamp': firestore.SERVER_TIMESTAMP,
+                'timestamp': now_iso_wib(),  # WIB
                 'prediction_id': doc_id,
                 'result': 'WIN' if is_win else 'LOSE',
                 'predicted_price': float(predicted_price),
@@ -273,7 +291,7 @@ class FirebaseManager:
         """Get prediction statistics"""
         def _get_stats():
             collection = self.firestore_db.collection(FIREBASE_COLLECTIONS['predictions'])
-            cutoff_date = datetime.now() - timedelta(days=days)
+            cutoff_date_wib = get_local_now() - timedelta(days=days)
             
             query = collection.where('validated', '==', True)
             if timeframe_minutes:
@@ -290,9 +308,10 @@ class FirebaseManager:
             for doc in docs:
                 data = doc.to_dict()
                 
+                # Parse prediction time (WIB)
                 if 'prediction_time' in data:
-                    pred_time = datetime.fromisoformat(data['prediction_time'])
-                    if pred_time < cutoff_date:
+                    pred_time_wib = parse_iso_to_local(data['prediction_time'])
+                    if pred_time_wib < cutoff_date_wib:
                         continue
                 
                 total += 1
@@ -320,7 +339,7 @@ class FirebaseManager:
                 'win_rate': round(win_rate, 2),
                 'avg_error': round(avg_error, 2),
                 'avg_error_pct': round(avg_error_pct, 2),
-                'last_updated': datetime.now().isoformat()
+                'last_updated': now_iso_wib()  # WIB
             }
         
         result, error = self._execute_with_retry(_get_stats)
@@ -336,7 +355,7 @@ class FirebaseManager:
         """Save statistics to Firebase"""
         def _save():
             collection = self.firestore_db.collection(FIREBASE_COLLECTIONS['statistics'])
-            doc_id = f"stats_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            doc_id = f"stats_{get_local_now().strftime('%Y%m%d_%H%M%S')}"
             collection.document(doc_id).set(stats)
             return doc_id
         
@@ -354,8 +373,7 @@ class FirebaseManager:
         def _save():
             collection = self.firestore_db.collection(FIREBASE_COLLECTIONS['model_performance'])
             doc_data = {
-                'timestamp': firestore.SERVER_TIMESTAMP,
-                'datetime': datetime.now().isoformat(),
+                'timestamp': now_iso_wib(),  # WIB
                 'metrics': metrics
             }
             collection.add(doc_data)
@@ -375,8 +393,7 @@ class FirebaseManager:
         def _save():
             collection = self.firestore_db.collection(FIREBASE_COLLECTIONS['system_health'])
             doc_data = {
-                'timestamp': firestore.SERVER_TIMESTAMP,
-                'datetime': datetime.now().isoformat(),
+                'timestamp': now_iso_wib(),  # WIB
                 **health_data
             }
             collection.add(doc_data)
@@ -390,26 +407,26 @@ class FirebaseManager:
         try:
             collection = self.firestore_db.collection(FIREBASE_COLLECTIONS['error_logs'])
             error_data = {
-                'timestamp': firestore.SERVER_TIMESTAMP,
-                'datetime': datetime.now().isoformat(),
+                'timestamp': now_iso_wib(),  # WIB
                 'operation': operation,
                 'error_type': type(error).__name__,
                 'error_message': str(error),
             }
             collection.add(error_data)
         except:
-            pass  # Silent fail for error logging
+            pass
     
     def cleanup_old_data(self, days: int = 30):
         """Clean up old data from Firebase"""
         def _cleanup():
-            cutoff_date = datetime.now() - timedelta(days=days)
+            cutoff_date_wib = get_local_now() - timedelta(days=days)
+            cutoff_iso = prepare_firebase_timestamp(cutoff_date_wib)
             total_deleted = 0
             
             for collection_name in [FIREBASE_COLLECTIONS['raw_data'], 
                                    FIREBASE_COLLECTIONS['predictions']]:
                 collection = self.firestore_db.collection(collection_name)
-                old_docs = collection.where('timestamp', '<', cutoff_date).limit(100).stream()
+                old_docs = collection.where('timestamp', '<', cutoff_iso).limit(100).stream()
                 
                 batch = self.firestore_db.batch()
                 count = 0

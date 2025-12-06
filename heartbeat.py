@@ -1,14 +1,16 @@
 """
 Heartbeat System for Bitcoin Predictor
 Maintains system status in Firebase for web dashboard monitoring
+ALL TIMESTAMPS IN WIB (UTC+7)
 """
 
 import logging
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 import psutil
 import os
+from timezone_utils import get_local_now, now_iso_wib
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +28,7 @@ class HeartbeatManager:
         """
         self.firebase = firebase_manager
         self.update_interval = update_interval
-        self.start_time = datetime.now()
+        self.start_time = get_local_now()
         self.last_heartbeat = None
         self.heartbeat_count = 0
         
@@ -44,20 +46,21 @@ class HeartbeatManager:
             cpu_percent = process.cpu_percent(interval=0.1)
             
             # Calculate uptime
-            uptime_seconds = (datetime.now() - self.start_time).total_seconds()
+            now_wib = get_local_now()
+            uptime_seconds = (now_wib - self.start_time).total_seconds()
             uptime_hours = uptime_seconds / 3600
             
             # Prepare heartbeat data
             heartbeat_data = {
                 'status': 'online',
-                'timestamp': datetime.now().isoformat(),
+                'timestamp': now_iso_wib(),  # WIB
                 'uptime_seconds': int(uptime_seconds),
                 'uptime_hours': round(uptime_hours, 2),
                 'memory_mb': round(memory_info.rss / 1024 / 1024, 2),
                 'cpu_percent': round(cpu_percent, 2),
                 'process_id': process.pid,
                 'heartbeat_count': self.heartbeat_count,
-                'last_heartbeat': self.last_heartbeat.isoformat() if self.last_heartbeat else None
+                'last_heartbeat': now_iso_wib() if self.last_heartbeat else None
             }
             
             # Add additional data if provided
@@ -69,7 +72,7 @@ class HeartbeatManager:
                 success = self._save_heartbeat(heartbeat_data)
                 
                 if success:
-                    self.last_heartbeat = datetime.now()
+                    self.last_heartbeat = get_local_now()
                     self.heartbeat_count += 1
                     logger.debug(f"💓 Heartbeat #{self.heartbeat_count} sent successfully")
                     return True
@@ -113,7 +116,7 @@ class HeartbeatManager:
         try:
             status_data = {
                 'status': status,
-                'timestamp': datetime.now().isoformat(),
+                'timestamp': now_iso_wib(),  # WIB
                 'message': message or f"System {status}"
             }
             
@@ -128,11 +131,14 @@ class HeartbeatManager:
     def send_shutdown_signal(self):
         """Send shutdown signal to Firebase"""
         try:
+            now_wib = get_local_now()
+            uptime_hours = (now_wib - self.start_time).total_seconds() / 3600
+            
             shutdown_data = {
                 'status': 'offline',
-                'timestamp': datetime.now().isoformat(),
+                'timestamp': now_iso_wib(),  # WIB
                 'message': 'System shutting down',
-                'uptime_hours': round((datetime.now() - self.start_time).total_seconds() / 3600, 2),
+                'uptime_hours': round(uptime_hours, 2),
                 'total_heartbeats': self.heartbeat_count
             }
             
@@ -149,14 +155,15 @@ class HeartbeatManager:
         try:
             process = psutil.Process(os.getpid())
             memory_info = process.memory_info()
-            uptime_seconds = (datetime.now() - self.start_time).total_seconds()
+            now_wib = get_local_now()
+            uptime_seconds = (now_wib - self.start_time).total_seconds()
             
             return {
                 'status': 'online',
                 'uptime_hours': round(uptime_seconds / 3600, 2),
                 'memory_mb': round(memory_info.rss / 1024 / 1024, 2),
                 'heartbeat_count': self.heartbeat_count,
-                'last_heartbeat': self.last_heartbeat.isoformat() if self.last_heartbeat else None
+                'last_heartbeat': now_iso_wib() if self.last_heartbeat else None
             }
             
         except Exception as e:
@@ -172,12 +179,13 @@ def cleanup_old_heartbeats(firebase_manager):
         firebase_manager: FirebaseManager instance
     """
     try:
-        from datetime import timedelta
+        from timezone_utils import prepare_firebase_timestamp
         
-        cutoff_date = datetime.now() - timedelta(days=7)
+        cutoff_date = get_local_now() - timedelta(days=7)
+        cutoff_iso = prepare_firebase_timestamp(cutoff_date)
         
         collection = firebase_manager.firestore_db.collection('system_status')
-        old_docs = collection.where('timestamp', '<', cutoff_date.isoformat()).limit(100).stream()
+        old_docs = collection.where('timestamp', '<', cutoff_iso).limit(100).stream()
         
         count = 0
         for doc in old_docs:
