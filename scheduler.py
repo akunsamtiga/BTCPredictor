@@ -1,5 +1,5 @@
 """
-Enhanced Automation Scheduler with Error Handling and Auto-Recovery
+Enhanced Automation Scheduler with Heartbeat System
 """
 
 import time
@@ -16,6 +16,7 @@ import traceback
 from config import PREDICTION_CONFIG, MODEL_CONFIG, VPS_CONFIG, HEALTH_CONFIG
 from firebase_manager import FirebaseManager
 from system_health import SystemHealthMonitor, monitor_health
+from heartbeat import HeartbeatManager  # Import heartbeat manager
 from btc_predictor_automated import (
     BitcoinMLPredictor,
     get_bitcoin_data_realtime,
@@ -27,12 +28,13 @@ logger = logging.getLogger(__name__)
 
 
 class EnhancedPredictionScheduler:
-    """Enhanced scheduler with error handling and auto-recovery"""
+    """Enhanced scheduler with error handling, auto-recovery, and heartbeat"""
     
     def __init__(self):
         self.predictor = BitcoinMLPredictor()
         self.firebase = None
         self.health_monitor = SystemHealthMonitor()
+        self.heartbeat = None  # Will be initialized after Firebase
         self.is_running = False
         self.timeframes = PREDICTION_CONFIG['timeframes']
         self.last_prediction_time = {}
@@ -68,12 +70,17 @@ class EnhancedPredictionScheduler:
                 
                 if self.firebase.connected:
                     logger.info("✅ Firebase connected successfully")
+                    
+                    # Initialize heartbeat manager
+                    self.heartbeat = HeartbeatManager(self.firebase, update_interval=30)
+                    self.heartbeat.send_status_change('starting', 'System initializing')
+                    
                     return True
                 
             except Exception as e:
                 logger.warning(f"⚠️ Firebase connection failed: {e}")
                 if attempt < max_retries - 1:
-                    time.sleep(5 * (2 ** attempt))  # Exponential backoff
+                    time.sleep(5 * (2 ** attempt))
         
         logger.error("❌ Could not connect to Firebase after multiple attempts")
         return False
@@ -82,6 +89,9 @@ class EnhancedPredictionScheduler:
         """Initialize or load ML models with error handling"""
         try:
             logger.info("🔧 Initializing models...")
+            
+            if self.heartbeat:
+                self.heartbeat.send_status_change('loading_models', 'Loading ML models')
             
             # Try to load existing models
             if self.predictor.load_models():
@@ -111,6 +121,9 @@ class EnhancedPredictionScheduler:
                 logger.info(f"🤖 TRAINING MODELS (Attempt {attempt + 1}/{max_retries})")
                 logger.info(f"{'='*80}")
                 
+                if self.heartbeat:
+                    self.heartbeat.send_status_change('training', 'Training ML models')
+                
                 # Fetch training data
                 df = self._fetch_training_data()
                 
@@ -134,6 +147,9 @@ class EnhancedPredictionScheduler:
                     
                     logger.info("✅ Training completed successfully\n")
                     
+                    if self.heartbeat:
+                        self.heartbeat.send_status_change('trained', 'Models trained successfully')
+                    
                     # Clear memory after training
                     if VPS_CONFIG['enable_memory_optimization']:
                         gc.collect()
@@ -156,7 +172,7 @@ class EnhancedPredictionScheduler:
     
     def _fetch_training_data(self):
         """Fetch data for training with fallback options"""
-        intervals = ['hour', 'day']  # Fallback intervals
+        intervals = ['hour', 'day']
         days_options = [30, 60, 90]
         
         for days in days_options:
@@ -181,7 +197,7 @@ class EnhancedPredictionScheduler:
             # Use cache if available and recent
             if not force_refresh and self.data_cache is not None and self.data_cache_time:
                 age = (datetime.now() - self.data_cache_time).total_seconds()
-                if age < 120:  # 2 minutes
+                if age < 120:
                     logger.debug("📦 Using cached data")
                     return self.data_cache
             
@@ -192,27 +208,22 @@ class EnhancedPredictionScheduler:
                 try:
                     logger.info("📡 Fetching fresh data...")
                     
-                    # Try hour data first
                     df = get_bitcoin_data_realtime(days=14, interval='hour')
                     
                     if df is None or len(df) < 200:
                         logger.warning(f"⚠️ Insufficient hour data, trying with more days...")
                         df = get_bitcoin_data_realtime(days=30, interval='hour')
                     
-                    # Fallback to day data if hour fails
                     if df is None or len(df) < 200:
                         logger.warning("⚠️ Hour data failed, trying day data...")
                         df = get_bitcoin_data_realtime(days=90, interval='day')
                     
                     if df is not None and len(df) >= 200:
-                        # Add indicators
                         df = add_technical_indicators(df)
                         
-                        # Update cache
                         self.data_cache = df
                         self.data_cache_time = datetime.now()
                         
-                        # Save to Firebase
                         if self.firebase and self.firebase.connected:
                             try:
                                 self.firebase.save_raw_data(df, limit=100)
@@ -243,6 +254,15 @@ class EnhancedPredictionScheduler:
             logger.info(f"🔮 RUNNING PREDICTIONS - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
             logger.info(f"{'='*80}")
             
+            # Send heartbeat
+            if self.heartbeat:
+                self.heartbeat.send_heartbeat({
+                    'last_activity': 'running_predictions',
+                    'total_predictions': self.total_predictions,
+                    'successful_predictions': self.successful_predictions,
+                    'failed_predictions': self.failed_predictions
+                })
+            
             # Check system health
             if HEALTH_CONFIG['enable_watchdog']:
                 health = self.health_monitor.get_full_health_report()
@@ -267,19 +287,16 @@ class EnhancedPredictionScheduler:
             
             for timeframe in self.timeframes:
                 try:
-                    # Check if should predict for this timeframe
                     if self._should_skip_timeframe(timeframe):
                         continue
                     
                     logger.info(f"\n⏱️ Predicting for {timeframe} minutes...")
                     
-                    # Make prediction
                     prediction = self.predictor.predict(df, timeframe)
                     
                     if prediction:
                         self._display_prediction_summary(prediction)
                         
-                        # Save to Firebase
                         if self.firebase and self.firebase.connected:
                             doc_id = self.firebase.save_prediction(prediction)
                             
@@ -347,21 +364,20 @@ class EnhancedPredictionScheduler:
         if self.consecutive_failures >= max_failures:
             logger.error(f"❌ Too many consecutive failures ({self.consecutive_failures})")
             
+            if self.heartbeat:
+                self.heartbeat.send_status_change('error', f'Too many failures: {self.consecutive_failures}')
+            
             if HEALTH_CONFIG['auto_restart_on_error']:
                 logger.warning("🔄 Attempting auto-recovery...")
                 
-                # Try to reconnect Firebase
                 self._initialize_firebase()
                 
-                # Try to reload models
                 if not self.predictor.is_trained:
                     self.initialize_models()
                 
-                # Clear data cache
                 self.data_cache = None
                 self.data_cache_time = None
                 
-                # Reset counter
                 self.consecutive_failures = 0
                 
                 logger.info("✅ Auto-recovery attempted")
@@ -377,14 +393,12 @@ class EnhancedPredictionScheduler:
                 logger.warning("⚠️ Firebase not connected, skipping validation")
                 return
             
-            # Get unvalidated predictions
             predictions = self.firebase.get_unvalidated_predictions()
             
             if not predictions:
                 logger.info("✅ No predictions to validate")
                 return
             
-            # Get current price
             current_price = get_current_btc_price()
             
             if not current_price:
@@ -393,7 +407,6 @@ class EnhancedPredictionScheduler:
             
             logger.info(f"💰 Current price: ${current_price:,.2f}")
             
-            # Validate each prediction
             validated_count = 0
             for pred in predictions:
                 try:
@@ -414,7 +427,6 @@ class EnhancedPredictionScheduler:
             
             logger.info(f"✅ Validated {validated_count}/{len(predictions)} predictions\n")
             
-            # Update statistics
             if validated_count > 0:
                 self.update_statistics()
             
@@ -430,14 +442,12 @@ class EnhancedPredictionScheduler:
             
             logger.info("📊 Updating statistics...")
             
-            # Overall statistics
             overall_stats = self.firebase.get_statistics(days=7)
             
             if overall_stats and overall_stats.get('total_predictions', 0) > 0:
                 logger.info(f"   Overall: {overall_stats['win_rate']:.1f}% win rate")
                 self.firebase.save_statistics(overall_stats)
             
-            # Per-timeframe statistics
             for timeframe in self.timeframes:
                 stats = self.firebase.get_statistics(timeframe_minutes=timeframe, days=7)
                 
@@ -464,7 +474,14 @@ class EnhancedPredictionScheduler:
             
             report = monitor_health(self.firebase if self.firebase and self.firebase.connected else None)
             
-            # Check if should restart
+            # Send heartbeat with health data
+            if self.heartbeat:
+                self.heartbeat.send_heartbeat({
+                    'health_status': report['overall_status'],
+                    'memory_mb': report['memory']['process_memory_mb'],
+                    'cpu_percent': report['cpu']['cpu_percent']
+                })
+            
             if self.health_monitor.should_restart():
                 logger.warning("⚠️ System requires restart")
                 self.stop()
@@ -478,12 +495,10 @@ class EnhancedPredictionScheduler:
         try:
             logger.info("🗑️ Running periodic cleanup...")
             
-            # Garbage collection
             if VPS_CONFIG['enable_memory_optimization']:
                 gc.collect()
                 logger.info("✅ Garbage collection completed")
             
-            # Firebase cleanup
             if self.firebase and self.firebase.connected:
                 self.firebase.cleanup_old_data(days=30)
             
@@ -496,21 +511,19 @@ class EnhancedPredictionScheduler:
         logger.info("🚀 STARTING BITCOIN PREDICTOR AUTOMATION")
         logger.info(f"{'='*80}")
         
-        # Initialize Firebase
         if not self._initialize_firebase():
             logger.error("❌ Cannot start without Firebase connection")
             return
         
-        # Initialize models
         if not self.initialize_models():
             logger.error("❌ Cannot start without trained models")
             return
         
-        # Schedule tasks
         logger.info("\n📅 Setting up schedule:")
         logger.info(f"   • Predictions: Every {PREDICTION_CONFIG['prediction_interval']} seconds")
         logger.info(f"   • Validation: Every {PREDICTION_CONFIG['validation_check_interval']} seconds")
         logger.info(f"   • Health check: Every {HEALTH_CONFIG['health_check_interval']} seconds")
+        logger.info(f"   • Heartbeat: Every 30 seconds")
         logger.info(f"   • Model retraining: Daily at 02:00")
         logger.info(f"   • Cleanup: Daily at 03:00")
         
@@ -519,18 +532,27 @@ class EnhancedPredictionScheduler:
         schedule.every(PREDICTION_CONFIG['validation_check_interval']).seconds.do(self.validate_predictions)
         schedule.every(HEALTH_CONFIG['health_check_interval']).seconds.do(self.periodic_health_check)
         
+        # Heartbeat every 30 seconds
+        if self.heartbeat:
+            schedule.every(30).seconds.do(lambda: self.heartbeat.send_heartbeat({
+                'last_activity': 'heartbeat',
+                'predictions_count': self.total_predictions
+            }))
+        
         schedule.every().day.at("02:00").do(self.train_models)
         schedule.every().day.at("03:00").do(self.periodic_cleanup)
         
         if VPS_CONFIG['garbage_collection_interval']:
             schedule.every(VPS_CONFIG['garbage_collection_interval']).seconds.do(gc.collect)
         
-        # Run first prediction
         logger.info("\n🎯 Running initial predictions...")
         self.run_predictions()
         
-        # Run initial health check
         self.periodic_health_check()
+        
+        # Update status to running
+        if self.heartbeat:
+            self.heartbeat.send_status_change('running', 'System fully operational')
         
         self.is_running = True
         logger.info("\n✅ Automation started successfully!")
@@ -554,6 +576,10 @@ class EnhancedPredictionScheduler:
         """Stop the scheduler gracefully"""
         logger.info("🛑 Stopping automation...")
         self.is_running = False
+        
+        # Send shutdown signal
+        if self.heartbeat:
+            self.heartbeat.send_shutdown_signal()
         
         # Save final statistics
         if self.firebase and self.firebase.connected:
