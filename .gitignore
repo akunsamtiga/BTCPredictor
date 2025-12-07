@@ -1,34 +1,134 @@
+# Bitcoin Predictor - Git Ignore
+
+# Environment Variables - NEVER COMMIT
+.env
+.env.local
+.env.*.local
+
+# Firebase Credentials - NEVER COMMIT
+service-account.json
+*-firebase-adminsdk-*.json
+
+# API Keys - NEVER COMMIT
+api_keys.txt
+credentials.json
+
 # Python
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
 .Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Virtual Environment
 venv/
-env/
 ENV/
+env/
+.venv
 
-# Firebase
-firebase-credentials.json
-
-# Models
-models/*.keras
-models/*.pkl
+# ML Models (optional - uncomment if models are too large)
+# models/*.keras
+# models/*.pkl
+# models/*.h5
 
 # Logs
 logs/*.log
+logs/*.txt
 *.log
+
+# Backups
+backups/
+*.backup
+*.bak
+
+# Exports
+exports/*.csv
+exports/*.txt
+exports/*.xlsx
+
+# OS Files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
 
 # IDE
 .vscode/
 .idea/
 *.swp
 *.swo
+*~
+.project
+.pydevproject
+.settings/
 
-# OS
-.DS_Store
-Thumbs.db
+# Jupyter Notebooks
+.ipynb_checkpoints
+*.ipynb
 
-# Data
-*.csv
-*.xlsx
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Temporary Files
+tmp/
+temp/
+*.tmp
+
+# System
+.cache/
+*.pid
+
+# Redis
+dump.rdb
+
+# Local Configuration
+config.local.py
+local_settings.py
+
+# Documentation builds
+docs/_build/
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Pyre type checker
+.pyre/
+
+# pytype static type analyzer
+.pytype/
+
+# Cython debug symbols
+cython_debug/
