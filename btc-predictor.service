@@ -11,26 +11,38 @@ User=stcautotrade
 Group=stcautotrade
 WorkingDirectory=/home/stcautotrade/btc-predictor
 
-# Environment variables
+# Environment variables - PATH HARUS INCLUDE VENV
 Environment="PATH=/home/stcautotrade/btc-predictor/venv/bin:/usr/local/bin:/usr/bin:/bin"
 Environment="PYTHONUNBUFFERED=1"
 Environment="PYTHONPATH=/home/stcautotrade/btc-predictor"
+
+# TensorFlow optimization untuk CPU-only
 Environment="TF_CPP_MIN_LOG_LEVEL=2"
+Environment="TF_ENABLE_ONEDNN_OPTS=0"
 Environment="OMP_NUM_THREADS=2"
 Environment="TF_NUM_INTEROP_THREADS=1"
 Environment="TF_NUM_INTRAOP_THREADS=2"
+Environment="KMP_AFFINITY=granularity=fine,compact,1,0"
+Environment="KMP_BLOCKTIME=0"
 
-# Load .env file (PENTING!)
+# Load .env file (CRITICAL - must exist!)
 EnvironmentFile=/home/stcautotrade/btc-predictor/.env
 
-# Main command - SIMPLIFIED (remove tee for better systemd logging)
+# Main command - Direct execution
 ExecStart=/home/stcautotrade/btc-predictor/venv/bin/python3 /home/stcautotrade/btc-predictor/scheduler.py
 
-# ALWAYS restart
+# Pre-start check (optional but recommended)
+ExecStartPre=/bin/bash -c 'test -f /home/stcautotrade/btc-predictor/.env || (echo "ERROR: .env file not found" && exit 1)'
+ExecStartPre=/bin/bash -c 'test -f /home/stcautotrade/btc-predictor/venv/bin/python3 || (echo "ERROR: venv not found" && exit 1)'
+
+# Post-start notification (optional)
+# ExecStartPost=/bin/bash -c 'echo "Bitcoin Predictor started at $(date)" >> /home/stcautotrade/btc-predictor/logs/service.log'
+
+# ALWAYS restart on failure
 Restart=always
 RestartSec=10
 
-# Restart limits
+# Restart limits - Allow more attempts
 StartLimitBurst=10
 StartLimitIntervalSec=300
 
@@ -38,26 +50,32 @@ StartLimitIntervalSec=300
 TimeoutStartSec=300
 TimeoutStopSec=60
 
-# Resource limits - disesuaikan untuk CPU only
+# Resource limits - Adjusted for VPS
 MemoryMax=3G
 MemoryHigh=2.5G
 CPUQuota=150%
 
-# Logging - systemd will handle this
+# Nice level (lower priority than system services)
+Nice=10
+
+# Logging - systemd journal
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=btc-predictor
 
-# Security
+# Security hardening
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=read-only
+
+# Writable paths - IMPORTANT!
 ReadWritePaths=/home/stcautotrade/btc-predictor
 ReadWritePaths=/home/stcautotrade/btc-predictor/logs
 ReadWritePaths=/home/stcautotrade/btc-predictor/models
+ReadWritePaths=/home/stcautotrade/btc-predictor/models_backup
 
-# Kill mode
+# Kill behavior
 KillMode=mixed
 KillSignal=SIGTERM
 SendSIGKILL=yes

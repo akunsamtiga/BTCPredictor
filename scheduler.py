@@ -1,10 +1,10 @@
 """
-FIXED Scheduler - NO BACKTEST
-Simplified and focused on accurate predictions
+Smart Scheduler - Timeframe-Based Prediction
+Each timeframe runs at its optimal interval with independent analysis
+ALL TIMESTAMPS IN WIB (UTC+7)
 """
 
 import time
-import schedule
 import logging
 import gc
 import signal
@@ -12,12 +12,11 @@ import sys
 import os
 import psutil
 from datetime import datetime, timedelta
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from config import (
     PREDICTION_CONFIG, MODEL_CONFIG, HEALTH_CONFIG, STRATEGY_CONFIG,
-    get_timeframe_category, get_timeframe_label, is_paper_trading,
-    is_production, get_config_summary
+    get_timeframe_category, get_timeframe_label, get_data_config_for_timeframe
 )
 from firebase_manager import FirebaseManager
 from system_health import SystemHealthMonitor
@@ -43,6 +42,91 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+class TimeframeScheduler:
+    """
+    Smart scheduler for each timeframe
+    Each timeframe has its own schedule and data requirements
+    """
+    
+    def __init__(self, timeframe_minutes: int):
+        self.timeframe = timeframe_minutes
+        self.last_prediction = None
+        self.prediction_count = 0
+        self.category = get_timeframe_category(timeframe_minutes)
+        self.data_config = get_data_config_for_timeframe(timeframe_minutes)
+        
+    def should_predict_now(self) -> bool:
+        """
+        Check if this timeframe should make prediction now
+        Based on current time alignment with timeframe
+        """
+        now = datetime.now()
+        current_minute = now.hour * 60 + now.minute
+        
+        # Check if current time is aligned with timeframe interval
+        if current_minute % self.timeframe == 0:
+            # Check if we haven't predicted in this interval yet
+            if self.last_prediction is None:
+                return True
+            
+            # Check if enough time has passed since last prediction
+            time_since_last = (now - self.last_prediction).total_seconds() / 60
+            if time_since_last >= self.timeframe:
+                return True
+        
+        return False
+    
+    def mark_prediction_made(self):
+        """Mark that prediction was made"""
+        self.last_prediction = datetime.now()
+        self.prediction_count += 1
+    
+    def get_next_prediction_time(self) -> datetime:
+        """Get next scheduled prediction time"""
+        now = datetime.now()
+        current_minute = now.hour * 60 + now.minute
+        
+        # Calculate next aligned time
+        next_minute = ((current_minute // self.timeframe) + 1) * self.timeframe
+        
+        # Handle day rollover
+        next_hour = next_minute // 60
+        next_min = next_minute % 60
+        
+        if next_hour >= 24:
+            next_day = now + timedelta(days=1)
+            return next_day.replace(hour=next_hour % 24, minute=next_min, second=0, microsecond=0)
+        
+        return now.replace(hour=next_hour, minute=next_min, second=0, microsecond=0)
+    
+    def get_independent_data(self) -> Optional[object]:
+        """
+        Fetch data specifically for this timeframe
+        Each timeframe gets its own optimized dataset
+        """
+        try:
+            logger.info(f"📡 [{get_timeframe_label(self.timeframe)}] Fetching independent data...")
+            logger.info(f"   Config: {self.data_config['days']} days, {self.data_config['interval']} interval")
+            
+            df = get_bitcoin_data_realtime(
+                days=self.data_config['days'],
+                interval=self.data_config['interval']
+            )
+            
+            if df is None or len(df) < self.data_config['min_points']:
+                logger.warning(f"⚠️ Insufficient data: {len(df) if df is not None else 0}")
+                return None
+            
+            df = add_technical_indicators(df)
+            
+            logger.info(f"✅ Data ready: {len(df)} points")
+            return df
+            
+        except Exception as e:
+            logger.error(f"❌ Error fetching data: {e}")
+            return None
+
+
 class WatchdogTimer:
     """Watchdog timer to detect hanging processes"""
     
@@ -60,7 +144,7 @@ class WatchdogTimer:
         self.is_running = True
         self.thread = threading.Thread(target=self._monitor, daemon=True)
         self.thread.start()
-        logger.info(f"🐕 Watchdog started (timeout: {self.timeout}s)")
+        logger.info(f"🕐 Watchdog started (timeout: {self.timeout}s)")
     
     def stop(self):
         self.is_running = False
@@ -77,7 +161,10 @@ class WatchdogTimer:
 
 
 class ImprovedScheduler:
-    """Improved scheduler - SIMPLIFIED, NO BACKTEST"""
+    """
+    Improved scheduler with smart timeframe-based prediction
+    Each timeframe runs independently at optimal intervals
+    """
     
     def __init__(self):
         self.predictor = None
@@ -89,10 +176,10 @@ class ImprovedScheduler:
         self.watchdog = WatchdogTimer(timeout=HEALTH_CONFIG['watchdog_timeout'])
         self.is_running = False
         
-        # Timeframe management
-        self.active_timeframes = PREDICTION_CONFIG['active_timeframes']
-        self.last_prediction_time = {}
-        self.prediction_counters = {}
+        # Create scheduler for each timeframe
+        self.timeframe_schedulers: Dict[int, TimeframeScheduler] = {}
+        for tf in PREDICTION_CONFIG['active_timeframes']:
+            self.timeframe_schedulers[tf] = TimeframeScheduler(tf)
         
         # Performance tracking
         self.consecutive_failures = 0
@@ -116,12 +203,29 @@ class ImprovedScheduler:
         signal.signal(signal.SIGINT, self._signal_handler)
         signal.signal(signal.SIGTERM, self._signal_handler)
         
-        # Initialize counters
-        for tf in self.active_timeframes:
-            self.prediction_counters[tf] = 0
+        logger.info("🚀 Smart Scheduler initialized")
+        logger.info(f"📊 Active timeframes: {[get_timeframe_label(tf) for tf in PREDICTION_CONFIG['active_timeframes']]}")
+        self._display_schedule()
+    
+    def _display_schedule(self):
+        """Display prediction schedule for each timeframe"""
+        logger.info("\n" + "="*80)
+        logger.info("📅 PREDICTION SCHEDULE")
+        logger.info("="*80)
         
-        logger.info("🚀 Improved Scheduler initialized (NO BACKTEST)")
-        logger.info(f"Active timeframes: {[get_timeframe_label(tf) for tf in self.active_timeframes]}")
+        now = datetime.now()
+        
+        for tf in sorted(self.timeframe_schedulers.keys()):
+            scheduler = self.timeframe_schedulers[tf]
+            next_time = scheduler.get_next_prediction_time()
+            time_until = (next_time - now).total_seconds() / 60
+            
+            label = get_timeframe_label(tf)
+            category = scheduler.category.upper()
+            
+            logger.info(f"{label:8} ({category:12}) | Every {tf:4} min | Next: {next_time.strftime('%H:%M')} (in {time_until:.0f}min)")
+        
+        logger.info("="*80 + "\n")
     
     def _signal_handler(self, signum, frame):
         logger.info(f"\n⚠️ Received signal {signum}, shutting down...")
@@ -341,8 +445,11 @@ class ImprovedScheduler:
             return True
         return False
     
-    def run_predictions(self):
-        """Run predictions with all improvements"""
+    def run_prediction_cycle(self):
+        """
+        Smart prediction cycle - only predict timeframes that are due
+        Each timeframe runs at its optimal interval
+        """
         try:
             self.watchdog.reset()
             
@@ -350,8 +457,11 @@ class ImprovedScheduler:
             if self._check_cooldown():
                 return
             
+            now = datetime.now()
+            current_time = now.strftime('%H:%M:%S')
+            
             logger.info(f"\n{'='*80}")
-            logger.info(f"🔮 PREDICTIONS - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            logger.info(f"🔮 PREDICTION CYCLE - {now.strftime('%Y-%m-%d %H:%M:%S')}")
             logger.info(f"{'='*80}")
             
             # Check memory
@@ -383,66 +493,52 @@ class ImprovedScheduler:
             if current_price:
                 logger.info(f"💰 BTC: ${current_price:,.2f}")
             
-            # Fetch data per category
-            data_by_category = {}
-            categories_needed = set()
+            # Check which timeframes should predict now
+            timeframes_to_predict = []
             
-            for tf in self.active_timeframes:
-                category = get_timeframe_category(tf)
-                categories_needed.add(category)
+            for tf, scheduler in self.timeframe_schedulers.items():
+                if scheduler.should_predict_now():
+                    timeframes_to_predict.append(tf)
             
-            for category in categories_needed:
-                from config import get_data_config_for_timeframe
-                sample_tf = next((tf for tf in self.active_timeframes 
-                                 if get_timeframe_category(tf) == category), None)
-                
-                if sample_tf:
-                    data_config = get_data_config_for_timeframe(sample_tf)
-                    
-                    # Try cache first
-                    cache_key = f"data:{category}:{data_config['days']}:{data_config['interval']}"
-                    df = self.cache.get(cache_key)
-                    
-                    if df is None:
-                        logger.info(f"📡 Fetching {category} data...")
-                        df = get_bitcoin_data_realtime(
-                            days=data_config['days'],
-                            interval=data_config['interval']
-                        )
-                        
-                        if df is not None:
-                            df = add_technical_indicators(df)
-                            self.cache.set(cache_key, df, ttl=300)
-                            data_by_category[category] = df
-                    else:
-                        logger.info(f"📦 Using cached {category} data")
-                        data_by_category[category] = df
-            
-            if not data_by_category:
-                logger.error("❌ No data available")
-                self.consecutive_failures += 1
+            if not timeframes_to_predict:
+                logger.info("⏭️ No timeframes scheduled for this cycle")
+                logger.info(f"{'='*80}\n")
                 return
             
-            # Run predictions
+            logger.info(f"\n📋 Timeframes scheduled for prediction:")
+            for tf in timeframes_to_predict:
+                label = get_timeframe_label(tf)
+                category = self.timeframe_schedulers[tf].category
+                logger.info(f"   • {label:8} ({category})")
+            
+            # Run predictions for scheduled timeframes
             predictions_made = 0
             
-            for tf in self.active_timeframes:
+            for tf in timeframes_to_predict:
                 try:
                     self.watchdog.reset()
                     
-                    category = get_timeframe_category(tf)
-                    if category not in data_by_category:
-                        continue
-                    
-                    df = data_by_category[category]
+                    scheduler = self.timeframe_schedulers[tf]
                     label = get_timeframe_label(tf)
+                    category = scheduler.category
                     
-                    logger.info(f"\n⏱️ {label}...")
+                    logger.info(f"\n{'─'*80}")
+                    logger.info(f"⏱️ {label} ({category.upper()})")
+                    logger.info(f"{'─'*80}")
+                    
+                    # Get independent data for this timeframe
+                    df = scheduler.get_independent_data()
+                    
+                    if df is None:
+                        logger.warning(f"⚠️ Skipped - no data available")
+                        continue
                     
                     # Update predictor with recent accuracy
                     if self.recent_accuracy is not None:
                         self.predictor.recent_accuracy = self.recent_accuracy
                     
+                    # Make prediction
+                    logger.info(f"🧠 Analyzing with {len(df)} data points...")
                     prediction = self.predictor.predict(df, tf)
                     
                     if prediction:
@@ -453,13 +549,16 @@ class ImprovedScheduler:
                             doc_id = self.firebase.save_prediction(prediction)
                             
                             if doc_id:
-                                self.last_prediction_time[tf] = datetime.now()
-                                self.prediction_counters[tf] += 1
+                                scheduler.mark_prediction_made()
                                 predictions_made += 1
                                 self.successful_predictions += 1
                                 self.last_successful_prediction = datetime.now()
                                 self.consecutive_failures = 0
                                 logger.info(f"✅ Saved: {doc_id}")
+                                
+                                # Show next prediction time
+                                next_time = scheduler.get_next_prediction_time()
+                                logger.info(f"⏭️ Next prediction: {next_time.strftime('%H:%M')}")
                             else:
                                 self.failed_predictions += 1
                     else:
@@ -486,7 +585,7 @@ class ImprovedScheduler:
                         )
             
             logger.info(f"\n{'='*80}")
-            logger.info(f"✅ Cycle complete - {predictions_made} predictions")
+            logger.info(f"✅ Cycle complete - {predictions_made} predictions made")
             logger.info(f"📊 Success: {self.successful_predictions}/{self.total_predictions}")
             logger.info(f"{'='*80}\n")
             
@@ -515,7 +614,7 @@ class ImprovedScheduler:
                    f"Confidence: {prediction['confidence']:.1f}%")
     
     def validate_predictions(self):
-        """FIXED: Validate predictions correctly"""
+        """Validate predictions"""
         try:
             self.watchdog.reset()
             
@@ -537,23 +636,20 @@ class ImprovedScheduler:
             
             for pred in predictions:
                 try:
-                    # FIXED: Pass current_price from prediction
                     result = self.firebase.validate_prediction(
                         pred['doc_id'],
-                        current_price,  # actual_price
+                        current_price,
                         pred['predicted_price'],
-                        pred['current_price'],  # PENTING: current price saat prediksi dibuat
+                        pred['current_price'],
                         pred['trend']
                     )
                     
                     if result:
                         validated_count += 1
                         
-                        # Track result
                         is_win = 'WIN' in str(pred.get('validation_result', '')).upper()
                         self.recent_results.append(is_win)
                         
-                        # Keep only last 100 results
                         if len(self.recent_results) > 100:
                             self.recent_results.pop(0)
                         
@@ -571,18 +667,15 @@ class ImprovedScheduler:
             if validated_count > 0:
                 logger.info(f"✅ Validated {validated_count} predictions ({wins}W/{losses}L)")
                 
-                # Update recent accuracy
                 if len(self.recent_results) >= 10:
                     self.recent_accuracy = sum(self.recent_results) / len(self.recent_results) * 100
                 
-                # Check for cooldown
                 max_streak = STRATEGY_CONFIG['risk_management']['cooldown_after_loss_streak']
                 if self.loss_streak >= max_streak:
                     cooldown_min = STRATEGY_CONFIG['risk_management']['cooldown_duration_minutes']
                     self.cooldown_until = datetime.now() + timedelta(minutes=cooldown_min)
                     logger.warning(f"⏸️ Entering cooldown for {cooldown_min} minutes after {self.loss_streak} losses")
                 
-                # Update statistics
                 self.update_statistics()
             
             self.watchdog.reset()
@@ -591,24 +684,21 @@ class ImprovedScheduler:
             logger.error(f"❌ Validation cycle error: {e}")
     
     def update_statistics(self):
-        """Update and check statistics"""
+        """Update statistics"""
         try:
             if not self.firebase or not self.firebase.connected:
                 return
             
-            # Get overall stats
             overall_stats = self.firebase.get_statistics(days=7)
             
             if overall_stats and overall_stats.get('total_predictions', 0) > 0:
                 self.firebase.save_statistics(overall_stats)
                 
-                # Check win rate and alert if low
                 win_rate = overall_stats.get('win_rate', 0)
                 if self.alert_manager:
                     self.alert_manager.alert_low_winrate(win_rate, "Overall")
                 
-                # Check per timeframe
-                for tf in self.active_timeframes:
+                for tf in PREDICTION_CONFIG['active_timeframes']:
                     tf_stats = self.firebase.get_statistics(timeframe_minutes=tf, days=7)
                     if tf_stats and tf_stats.get('total_predictions', 0) >= 10:
                         tf_winrate = tf_stats.get('win_rate', 0)
@@ -643,7 +733,6 @@ class ImprovedScheduler:
                     'total_predictions': self.total_predictions
                 })
             
-            # Check disk space
             import shutil
             total, used, free = shutil.disk_usage("/")
             free_gb = free / (1024**3)
@@ -651,7 +740,6 @@ class ImprovedScheduler:
             if free_gb < 1.0 and self.alert_manager:
                 self.alert_manager.alert_disk_space_low(free_gb)
             
-            # Check if critical
             if report['overall_status'] == 'CRITICAL':
                 logger.error("❌ System critical")
                 if self.alert_manager:
@@ -670,46 +758,30 @@ class ImprovedScheduler:
     def start(self):
         """Start scheduler"""
         logger.info(f"\n{'='*80}")
-        logger.info("🚀 STARTING BITCOIN PREDICTOR (FIXED)")
+        logger.info("🚀 STARTING BITCOIN PREDICTOR (SMART SCHEDULING)")
         logger.info(f"{'='*80}")
         logger.info(f"Environment: {os.getenv('ENVIRONMENT', 'development')}")
         logger.info(f"Trading Mode: {os.getenv('TRADING_MODE', 'paper')}")
         logger.info(f"{'='*80}\n")
         
-        # Record start memory
         self.start_memory = psutil.Process(os.getpid()).memory_info().rss / 1024 / 1024
         logger.info(f"💾 Starting memory: {self.start_memory:.0f}MB")
         
-        # Start watchdog
         self.watchdog.start()
         
-        # Initialize
         if not self.initialize():
             logger.error("❌ Initialization failed")
             return
         
-        # Setup schedules
-        logger.info("\n📅 Setting up schedule:")
-        logger.info("   • Predictions: Every 5 minutes")
+        logger.info("\n📅 System will check every minute for scheduled predictions")
         logger.info("   • Validation: Every 60 seconds")
         logger.info("   • Health: Every 5 minutes")
         logger.info("   • Heartbeat: Every 30 seconds")
-        logger.info("   • Statistics: Every 10 minutes")
-        
-        schedule.every(300).seconds.do(self.run_predictions)
-        schedule.every(60).seconds.do(self.validate_predictions)
-        schedule.every(300).seconds.do(self.periodic_health_check)
-        schedule.every(600).seconds.do(self.update_statistics)
-        
-        if self.heartbeat:
-            schedule.every(30).seconds.do(lambda: self.heartbeat.send_heartbeat({
-                'status': 'running',
-                'predictions': self.total_predictions
-            }))
+        logger.info("   • Statistics: Every 10 minutes\n")
         
         # Initial run
-        logger.info("\n🎯 Initial run...")
-        self.run_predictions()
+        logger.info("🎯 Running initial prediction cycle...")
+        self.run_prediction_cycle()
         self.periodic_health_check()
         
         if self.heartbeat:
@@ -718,11 +790,47 @@ class ImprovedScheduler:
         self.is_running = True
         logger.info("\n✅ System started!\n")
         
-        # Main loop
+        # Main loop - check every minute
+        last_validation = time.time()
+        last_health = time.time()
+        last_heartbeat = time.time()
+        last_stats = time.time()
+        
         while self.is_running:
             try:
-                schedule.run_pending()
-                time.sleep(1)
+                current_time = time.time()
+                
+                # Heartbeat every 30 seconds
+                if current_time - last_heartbeat >= 30:
+                    if self.heartbeat:
+                        self.heartbeat.send_heartbeat({
+                            'status': 'running',
+                            'predictions': self.total_predictions
+                        })
+                    last_heartbeat = current_time
+                
+                # Validation every 60 seconds
+                if current_time - last_validation >= 60:
+                    self.validate_predictions()
+                    last_validation = current_time
+                
+                # Health check every 5 minutes
+                if current_time - last_health >= 300:
+                    self.periodic_health_check()
+                    last_health = current_time
+                
+                # Statistics every 10 minutes
+                if current_time - last_stats >= 600:
+                    self.update_statistics()
+                    last_stats = current_time
+                
+                # Check for predictions every minute
+                self.run_prediction_cycle()
+                
+                # Sleep until next minute boundary
+                now = datetime.now()
+                sleep_seconds = 60 - now.second
+                time.sleep(sleep_seconds)
                 
             except KeyboardInterrupt:
                 logger.info("\n⚠️ Shutdown requested...")

@@ -157,7 +157,7 @@ cat .env
 echo "Checking environment variables..."
 grep -E "(API_KEY|FIREBASE|ENVIRONMENT|TRADING_MODE)" .env
 
-# Set permissions
+# Set permissions (tidak perlu)
 chmod 600 .env
 ```
 
