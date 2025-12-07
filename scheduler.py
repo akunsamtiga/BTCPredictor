@@ -25,7 +25,7 @@ from heartbeat import HeartbeatManager
 from alert_system import get_alert_manager, AlertSeverity
 from backtest import BacktestEngine, run_comprehensive_backtest
 from cache_manager import get_cache
-from btc_predictor_improved import ImprovedBitcoinPredictor
+from btc_predictor_automated import ImprovedBitcoinPredictor
 from btc_predictor_automated import (
     get_bitcoin_data_realtime, 
     get_current_btc_price,
