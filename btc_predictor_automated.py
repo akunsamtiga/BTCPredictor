@@ -7,7 +7,7 @@ COMPLETE VERSION with Data Fetching Functions
 import numpy as np
 import pandas as pd
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, Optional
 import pickle
 import os
@@ -34,6 +34,15 @@ try:
 except ImportError as e:
     ML_AVAILABLE = False
     logger.error(f"❌ ML libraries not available: {e}")
+
+
+# ============================================================================
+# CONSTANTS FOR API LIMITS
+# ============================================================================
+
+# CryptoCompare API limits
+API_MAX_LIMIT = 2000  # Maximum points per request
+API_RATE_LIMIT_DELAY = 1  # Delay between requests (seconds)
 
 
 # ============================================================================
@@ -91,9 +100,56 @@ def get_current_btc_price() -> Optional[float]:
     return None
 
 
+def _fetch_single_batch(endpoint: str, limit: int, to_timestamp: Optional[int] = None) -> Optional[Dict]:
+    """
+    Fetch single batch of data from CryptoCompare API
+    
+    Args:
+        endpoint: API endpoint (histominute, histohour, histoday)
+        limit: Number of data points to fetch (max 2000)
+        to_timestamp: End timestamp (None = latest)
+    
+    Returns:
+        Dict with API response or None if failed
+    """
+    api_key = DATA_CONFIG.get('cryptocompare_api_key')
+    
+    url = f"https://min-api.cryptocompare.com/data/v2/{endpoint}"
+    params = {
+        'fsym': 'BTC',
+        'tsym': 'USD',
+        'limit': min(limit, API_MAX_LIMIT),
+        'api_key': api_key
+    }
+    
+    if to_timestamp:
+        params['toTs'] = to_timestamp
+    
+    try:
+        response = requests.get(url, params=params, timeout=30)
+        response.raise_for_status()
+        
+        data = response.json()
+        
+        if data.get('Response') == 'Error':
+            logger.error(f"❌ API Error: {data.get('Message')}")
+            return None
+        
+        if 'Data' not in data or 'Data' not in data['Data']:
+            logger.error(f"❌ Unexpected API response structure")
+            return None
+        
+        return data
+        
+    except Exception as e:
+        logger.error(f"❌ API request failed: {e}")
+        return None
+
+
 def get_bitcoin_data_realtime(days: int = 7, interval: str = 'hour') -> Optional[pd.DataFrame]:
     """
-    Fetch historical Bitcoin data from CryptoCompare
+    IMPROVED: Fetch historical Bitcoin data with automatic pagination
+    Handles API limit by making multiple requests if needed
     
     Args:
         days: Number of days of historical data
@@ -108,95 +164,162 @@ def get_bitcoin_data_realtime(days: int = 7, interval: str = 'hour') -> Optional
         logger.error("❌ CryptoCompare API key not configured")
         return None
     
-    # Determine API endpoint and limit
+    # Determine API endpoint and total points needed
     if interval == 'minute':
         endpoint = 'histominute'
-        limit = min(days * 1440, 2000)  # Max 2000 points
+        total_points = days * 1440  # minutes per day
     elif interval == 'hour':
         endpoint = 'histohour'
-        limit = min(days * 24, 2000)
+        total_points = days * 24
     elif interval == 'day':
         endpoint = 'histoday'
-        limit = days
+        total_points = days
     else:
         logger.error(f"❌ Invalid interval: {interval}")
         return None
     
-    url = f"https://min-api.cryptocompare.com/data/v2/{endpoint}"
-    params = {
-        'fsym': 'BTC',
-        'tsym': 'USD',
-        'limit': limit,
-        'api_key': api_key
-    }
+    # Check if we need multiple requests
+    if total_points <= API_MAX_LIMIT:
+        # Single request is enough
+        logger.info(f"📡 Fetching {total_points} {interval}ly data points (single request)...")
+        return _fetch_single_request(endpoint, total_points)
+    else:
+        # Need multiple requests
+        logger.info(f"📡 Fetching {total_points} {interval}ly data points (multiple requests)...")
+        return _fetch_multiple_requests(endpoint, total_points, interval)
+
+
+def _fetch_single_request(endpoint: str, limit: int) -> Optional[pd.DataFrame]:
+    """
+    Fetch data with single API request (for <= 2000 points)
+    """
+    data = _fetch_single_batch(endpoint, limit)
     
-    max_retries = 3
+    if not data:
+        return None
     
-    for attempt in range(max_retries):
-        try:
-            logger.info(f"📡 Fetching {limit} {interval}ly data points...")
-            
-            response = requests.get(url, params=params, timeout=30)
-            response.raise_for_status()
-            
-            data = response.json()
-            
-            if data.get('Response') == 'Error':
-                logger.error(f"❌ API Error: {data.get('Message')}")
-                return None
-            
-            if 'Data' not in data or 'Data' not in data['Data']:
-                logger.error(f"❌ Unexpected API response structure")
-                return None
-            
-            # Parse data
-            candles = data['Data']['Data']
-            
-            if not candles:
-                logger.error("❌ No data returned from API")
-                return None
-            
-            # Create DataFrame
-            df = pd.DataFrame(candles)
-            
-            # Convert timestamp to datetime
-            df['datetime'] = pd.to_datetime(df['time'], unit='s')
-            
-            # Rename columns
-            df = df.rename(columns={
-                'close': 'price',
-                'volumefrom': 'volume'
-            })
-            
-            # Select and order columns
-            df = df[['datetime', 'price', 'open', 'high', 'low', 'volume']]
-            
-            # Sort by datetime (most recent first)
-            df = df.sort_values('datetime', ascending=False).reset_index(drop=True)
-            
-            # Remove any rows with zero/null prices
-            df = df[df['price'] > 0].dropna(subset=['price'])
-            
-            logger.info(f"✅ Fetched {len(df)} data points")
-            logger.info(f"   Date range: {df.iloc[-1]['datetime']} to {df.iloc[0]['datetime']}")
-            logger.info(f"   Latest price: ${df.iloc[0]['price']:,.2f}")
-            
-            return df
-            
-        except requests.exceptions.RequestException as e:
-            logger.warning(f"⚠️ API request failed (attempt {attempt + 1}/{max_retries}): {e}")
-            if attempt < max_retries - 1:
-                time.sleep(2 ** attempt)
-            else:
-                logger.error(f"❌ Failed to fetch data after {max_retries} attempts")
-                return None
-        except Exception as e:
-            logger.error(f"❌ Error fetching data: {e}")
-            import traceback
-            traceback.print_exc()
-            return None
+    candles = data['Data']['Data']
     
-    return None
+    if not candles:
+        logger.error("❌ No data returned from API")
+        return None
+    
+    return _parse_candles_to_dataframe(candles)
+
+
+def _fetch_multiple_requests(endpoint: str, total_points: int, interval: str) -> Optional[pd.DataFrame]:
+    """
+    FIXED: Fetch data with multiple API requests (for > 2000 points)
+    
+    Strategy:
+    1. Calculate how many batches needed
+    2. Fetch latest batch first
+    3. Walk backwards in time to get older data
+    4. Combine all batches
+    """
+    all_candles = []
+    points_fetched = 0
+    current_to_timestamp = None  # Start with latest
+    
+    # Calculate number of batches needed
+    num_batches = (total_points + API_MAX_LIMIT - 1) // API_MAX_LIMIT
+    
+    logger.info(f"   📦 Will fetch {num_batches} batches to get {total_points} points")
+    
+    for batch_num in range(num_batches):
+        # Determine how many points to fetch in this batch
+        remaining_points = total_points - points_fetched
+        batch_size = min(remaining_points, API_MAX_LIMIT)
+        
+        logger.info(f"   📡 Batch {batch_num + 1}/{num_batches}: Fetching {batch_size} points...")
+        
+        # Fetch this batch
+        data = _fetch_single_batch(endpoint, batch_size, current_to_timestamp)
+        
+        if not data:
+            logger.error(f"   ❌ Failed to fetch batch {batch_num + 1}")
+            break
+        
+        candles = data['Data']['Data']
+        
+        if not candles:
+            logger.warning(f"   ⚠️ Empty batch {batch_num + 1}")
+            break
+        
+        # Add candles to collection
+        all_candles.extend(candles)
+        points_fetched += len(candles)
+        
+        logger.info(f"   ✅ Batch {batch_num + 1}: Got {len(candles)} points (total: {points_fetched}/{total_points})")
+        
+        # Update timestamp for next batch (walk backwards)
+        # Use the oldest timestamp from current batch
+        oldest_candle = candles[0]
+        current_to_timestamp = oldest_candle['time'] - 1  # Go back 1 second
+        
+        # Rate limiting - don't spam API
+        if batch_num < num_batches - 1:  # Don't sleep after last batch
+            time.sleep(API_RATE_LIMIT_DELAY)
+        
+        # Check if we have enough data
+        if points_fetched >= total_points:
+            logger.info(f"   ✅ Target reached: {points_fetched} points")
+            break
+    
+    if not all_candles:
+        logger.error("❌ No data collected from any batch")
+        return None
+    
+    # Remove duplicates (can happen at batch boundaries)
+    unique_candles = []
+    seen_times = set()
+    
+    for candle in all_candles:
+        if candle['time'] not in seen_times:
+            unique_candles.append(candle)
+            seen_times.add(candle['time'])
+    
+    logger.info(f"   🔍 Removed {len(all_candles) - len(unique_candles)} duplicate entries")
+    
+    return _parse_candles_to_dataframe(unique_candles)
+
+
+def _parse_candles_to_dataframe(candles: list) -> pd.DataFrame:
+    """
+    Parse candle data into DataFrame
+    
+    Args:
+        candles: List of candle dictionaries from API
+    
+    Returns:
+        DataFrame with processed data
+    """
+    # Create DataFrame
+    df = pd.DataFrame(candles)
+    
+    # Convert timestamp to datetime
+    df['datetime'] = pd.to_datetime(df['time'], unit='s')
+    
+    # Rename columns
+    df = df.rename(columns={
+        'close': 'price',
+        'volumefrom': 'volume'
+    })
+    
+    # Select and order columns
+    df = df[['datetime', 'price', 'open', 'high', 'low', 'volume']]
+    
+    # Sort by datetime (most recent first)
+    df = df.sort_values('datetime', ascending=False).reset_index(drop=True)
+    
+    # Remove any rows with zero/null prices
+    df = df[df['price'] > 0].dropna(subset=['price'])
+    
+    logger.info(f"✅ Processed {len(df)} data points")
+    logger.info(f"   Date range: {df.iloc[-1]['datetime']} to {df.iloc[0]['datetime']}")
+    logger.info(f"   Latest price: ${df.iloc[0]['price']:,.2f}")
+    
+    return df
 
 
 def add_technical_indicators(df: pd.DataFrame) -> pd.DataFrame:
@@ -296,7 +419,6 @@ def add_technical_indicators(df: pd.DataFrame) -> pd.DataFrame:
         logger.error(f"❌ Error adding technical indicators: {e}")
         return df
 
-
 # ============================================================================
 # ML PREDICTOR CLASS
 # ============================================================================
@@ -316,7 +438,7 @@ class ImprovedBitcoinPredictor:
         self.metrics = {}
         self.validation_scores = {}
         self.last_training = None
-        self.recent_accuracy = None  # Track recent performance
+        self.recent_accuracy = None
         
         logger.info("🤖 Improved predictor initialized")
     
