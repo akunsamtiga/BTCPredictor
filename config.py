@@ -1,6 +1,6 @@
 """
-Configuration file for Bitcoin Predictor - FIXED VERSION
-Optimized for CPU-only VPS
+Configuration file for Bitcoin Predictor - FIXED VERSION FOR ULTRA SHORT
+Optimized for CPU-only VPS with special handling for 5-minute predictions
 """
 
 # Firebase Configuration
@@ -12,7 +12,7 @@ FIREBASE_CONFIG = {
     'connection_timeout': 30
 }
 
-# Prediction Configuration - REDUCED for stability
+# Prediction Configuration - FIXED for ultra short
 PREDICTION_CONFIG = {
     # Ultra Short-term (Scalping) - 1-5 minutes
     'ultra_short_timeframes': [1, 2, 3, 5],
@@ -26,11 +26,11 @@ PREDICTION_CONFIG = {
     # Long-term (Position Trading) - 1-7 days
     'long_timeframes': [1440, 2880, 4320, 5760, 7200, 10080],
     
-    # Active timeframes - REDUCED untuk CPU only
+    # Active timeframes - ADJUSTED
     'active_timeframes': [
-        15, 30, 60,              # Short-term only
-        240, 720,                # Medium-term
-        1440                     # Long-term
+        5, 15, 30, 60,           # Include 5 min for testing
+        240, 720,
+        1440
     ],
     
     'all_timeframes': [
@@ -44,17 +44,19 @@ PREDICTION_CONFIG = {
     
     # Prediction intervals
     'prediction_intervals': {
-        'ultra_short': 60,
+        'ultra_short': 120,      # Every 2 minutes for ultra short
         'short': 180,
         'medium': 300,
         'long': 600,
         'all': 300
     },
     
-    # Timeframe weights
+    # Timeframe weights - ADJUSTED for ultra short
     'timeframe_weights': {
-        1: 0.5,
-        5: 0.7,
+        1: 0.4,                  # Lower weight for very short
+        2: 0.45,
+        3: 0.5,
+        5: 0.55,                 # Slightly increased for 5 min
         15: 0.85,
         30: 0.9,
         60: 0.95,
@@ -65,20 +67,20 @@ PREDICTION_CONFIG = {
         4320: 0.85
     },
     
-    # Minimum confidence
+    # Minimum confidence - ADJUSTED
     'min_confidence': {
-        'ultra_short': 60,
+        'ultra_short': 55,       # Lowered from 60
         'short': 55,
         'medium': 50,
         'long': 45
     },
     
-    # Data requirements
+    # Data requirements - CRITICAL FIX
     'data_requirements': {
         'ultra_short': {
-            'days': 2,
+            'days': 1,           # REDUCED from 2 days
             'interval': 'minute',
-            'min_points': 400
+            'min_points': 200    # REDUCED from 400
         },
         'short': {
             'days': 7,
@@ -103,7 +105,7 @@ PREDICTION_CONFIG = {
     'failure_backoff_multiplier': 2,
     
     'enable_smart_scheduling': True,
-    'skip_low_volatility': True,
+    'skip_low_volatility': False,  # Don't skip for ultra short
     'min_volatility_threshold': 0.5,
 }
 
@@ -111,14 +113,14 @@ PREDICTION_CONFIG = {
 DATA_CONFIG = {
     'cryptocompare_api_key': "ffb687da5df95e3406d379e05a57507512343439f68e01476dd6a97894818d3b",
     'data_retention_days': 30,
-    'min_data_points': 150,  # REDUCED
-    'cache_ttl': 120,
+    'min_data_points': 150,
+    'cache_ttl': 60,               # REDUCED to 1 minute for ultra short
     'api_fallback_intervals': ['hour', 'day'],
     
     'fetch_strategies': {
         'ultra_short': {
             'interval': 'minute',
-            'days': 2,
+            'days': 1,             # FIXED: Only 1 day
             'priority': 1
         },
         'short': {
@@ -139,33 +141,33 @@ DATA_CONFIG = {
     }
 }
 
-# Model Configuration - OPTIMIZED for CPU
+# Model Configuration - CRITICAL FIX for ultra short
 MODEL_CONFIG = {
     'lstm': {
-        'epochs': 30,              # REDUCED dari 50
-        'batch_size': 64,          # INCREASED untuk efisiensi CPU
-        'sequence_length': 40,     # REDUCED dari 60
-        'patience': 8,             # REDUCED dari 10
-        'ultra_short_sequence': 20,
+        'epochs': 30,
+        'batch_size': 64,
+        'sequence_length': 40,
+        'patience': 8,
+        'ultra_short_sequence': 15,  # REDUCED from 20
         'short_sequence': 40,
         'medium_sequence': 60,
         'long_sequence': 80
     },
     'rf': {
-        'n_estimators': 100,       # REDUCED dari 200
-        'max_depth': 10,           # REDUCED dari 15
-        'min_samples_split': 10    # INCREASED dari 5
+        'n_estimators': 100,
+        'max_depth': 10,
+        'min_samples_split': 10
     },
     'gb': {
-        'n_estimators': 100,       # REDUCED dari 200
+        'n_estimators': 100,
         'learning_rate': 0.1,
-        'max_depth': 4             # REDUCED dari 5
+        'max_depth': 4
     },
     'auto_retrain_interval': 86400,
     'model_save_path': 'models/',
     'backup_path': 'models_backup/',
     
-    'use_specialized_models': False,  # DISABLED untuk hemat memori
+    'use_specialized_models': False,
     'model_categories': ['ultra_short', 'short', 'medium', 'long']
 }
 
@@ -174,7 +176,7 @@ LOGGING_CONFIG = {
     'log_file': 'btc_predictor_automation.log',
     'error_log_file': 'btc_predictor_errors.log',
     'max_log_size': 10 * 1024 * 1024,
-    'backup_count': 3,             # REDUCED dari 5
+    'backup_count': 3,
     'log_level': 'INFO',
     'console_output': True
 }
@@ -186,18 +188,18 @@ API_CONFIG = {
     'retry_delay': 2,
     'exponential_backoff': True,
     'rate_limit_delay': 1,
-    'connection_pool_size': 5      # REDUCED dari 10
+    'connection_pool_size': 5
 }
 
-# System Health Configuration - CRITICAL for CPU
+# System Health Configuration
 HEALTH_CONFIG = {
-    'max_memory_mb': 2048,         # 2GB limit
-    'max_cpu_percent': 90,         # INCREASED untuk CPU
+    'max_memory_mb': 2048,
+    'max_cpu_percent': 90,
     'disk_space_min_gb': 1,
     'enable_watchdog': True,
-    'watchdog_timeout': 900,       # 15 minutes
+    'watchdog_timeout': 900,
     'auto_restart_on_error': True,
-    'max_auto_restarts': 10,       # INCREASED
+    'max_auto_restarts': 10,
     'health_check_interval': 300
 }
 
@@ -213,26 +215,25 @@ FIREBASE_COLLECTIONS = {
     'timeframe_stats': 'timeframe_statistics'
 }
 
-# VPS Optimization - CRITICAL
+# VPS Optimization
 VPS_CONFIG = {
     'enable_memory_optimization': True,
     'clear_tensorflow_session': True,
-    'garbage_collection_interval': 1800,  # Every 30 min
+    'garbage_collection_interval': 1800,
     'enable_swap_monitoring': True,
     
-    # CPU optimization
     'tf_num_threads': 2,
     'tf_inter_threads': 1,
     'tf_intra_threads': 2,
 }
 
-# Trading Strategy Configuration
+# Trading Strategy Configuration - ADJUSTED for ultra short
 STRATEGY_CONFIG = {
     'enable_mtf_analysis': True,
-    'mtf_confirmation_required': 2,  # REDUCED dari 3
+    'mtf_confirmation_required': 2,
     
     'correlation_timeframes': {
-        5: [15, 30],
+        5: [15, 30],             # 5 min looks at 15 and 30 min
         15: [30, 60],
         30: [60, 240],
         60: [240, 720],
@@ -243,7 +244,7 @@ STRATEGY_CONFIG = {
     
     'volatility_adjustments': {
         'high': {
-            'confidence_multiplier': 0.9,
+            'confidence_multiplier': 0.95,  # INCREASED from 0.9
             'prefer_timeframes': [5, 15, 30]
         },
         'medium': {
@@ -258,15 +259,15 @@ STRATEGY_CONFIG = {
     
     'time_based_strategy': {
         'asian_session': {
-            'active_timeframes': [15, 30, 60, 240],
+            'active_timeframes': [5, 15, 30, 60, 240],
             'volume_threshold': 0.7
         },
         'european_session': {
-            'active_timeframes': [15, 30, 60],
+            'active_timeframes': [5, 15, 30, 60],
             'volume_threshold': 0.5
         },
         'american_session': {
-            'active_timeframes': [15, 30, 60, 240],
+            'active_timeframes': [5, 15, 30, 60, 240],
             'volume_threshold': 0.5
         },
         'weekend': {

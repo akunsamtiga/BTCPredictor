@@ -1,6 +1,6 @@
 """
-Bitcoin Price Predictor - Automated Version
-Optimized for VPS deployment with Firebase integration
+Bitcoin Price Predictor - FIXED FOR ULTRA SHORT TIMEFRAMES
+Special handling for 5-minute predictions
 """
 
 import requests
@@ -17,19 +17,15 @@ from typing import Dict, Optional, List
 
 warnings.filterwarnings('ignore')
 
-from config import DATA_CONFIG, API_CONFIG, MODEL_CONFIG
+from config import DATA_CONFIG, API_CONFIG, MODEL_CONFIG, get_timeframe_category
 from firebase_manager import FirebaseManager
 
-# Setup logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
-# ============================================================================
-# MACHINE LEARNING LIBRARIES
-# ============================================================================
 try:
     from sklearn.ensemble import RandomForestClassifier, GradientBoostingRegressor
     from sklearn.preprocessing import MinMaxScaler, StandardScaler
@@ -47,12 +43,8 @@ except ImportError as e:
     ML_AVAILABLE = False
     logger.warning(f"⚠️ ML libraries not available: {e}")
 
-# ============================================================================
-# TECHNICAL INDICATORS (Streamlined)
-# ============================================================================
-
+# Technical Indicators
 def calculate_rsi(data, periods=14):
-    """Calculate Relative Strength Index"""
     delta = data.diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=periods).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=periods).mean()
@@ -61,7 +53,6 @@ def calculate_rsi(data, periods=14):
     return rsi
 
 def calculate_macd(data, fast=12, slow=26, signal=9):
-    """Calculate MACD"""
     ema_fast = data.ewm(span=fast, adjust=False).mean()
     ema_slow = data.ewm(span=slow, adjust=False).mean()
     macd = ema_fast - ema_slow
@@ -70,7 +61,6 @@ def calculate_macd(data, fast=12, slow=26, signal=9):
     return macd, signal_line, histogram
 
 def calculate_bollinger_bands(data, periods=20, std_dev=2):
-    """Calculate Bollinger Bands"""
     sma = data.rolling(window=periods).mean()
     std = data.rolling(window=periods).std()
     upper_band = sma + (std * std_dev)
@@ -78,60 +68,49 @@ def calculate_bollinger_bands(data, periods=20, std_dev=2):
     return upper_band, sma, lower_band
 
 def add_technical_indicators(df):
-    """Add essential technical indicators"""
     try:
         df = df.copy()
         
-        # Basic indicators
         df['rsi'] = calculate_rsi(df['price'], 14)
         df['macd'], df['macd_signal'], df['macd_hist'] = calculate_macd(df['price'])
         df['bb_upper'], df['bb_middle'], df['bb_lower'] = calculate_bollinger_bands(df['price'])
         
-        # Moving Averages
         df['ema_9'] = df['price'].ewm(span=9, adjust=False).mean()
         df['ema_21'] = df['price'].ewm(span=21, adjust=False).mean()
         df['ema_50'] = df['price'].ewm(span=50, adjust=False).mean()
         df['sma_20'] = df['price'].rolling(window=20).mean()
         df['sma_50'] = df['price'].rolling(window=50).mean()
         
-        # Stochastic
         lowest_low = df['low'].rolling(window=14).min()
         highest_high = df['high'].rolling(window=14).max()
         df['stoch_k'] = 100 * ((df['price'] - lowest_low) / (highest_high - lowest_low))
         df['stoch_d'] = df['stoch_k'].rolling(window=3).mean()
         
-        # ATR
         high_low = df['high'] - df['low']
         high_close = np.abs(df['high'] - df['price'].shift())
         low_close = np.abs(df['low'] - df['price'].shift())
         tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
         df['atr'] = tr.rolling(window=14).mean()
         
-        # Volume indicators
         df['volume_ma'] = df['volume'].rolling(window=20).mean()
         df['volume_ratio'] = df['volume'] / df['volume_ma']
         
-        # Price momentum
         df['momentum'] = df['price'] - df['price'].shift(10)
         df['rate_of_change'] = ((df['price'] - df['price'].shift(10)) / df['price'].shift(10)) * 100
         
-        # Price changes
         for period in [1, 3, 5, 10]:
             df[f'price_change_{period}'] = df['price'].pct_change(period) * 100
             df[f'price_lag_{period}'] = df['price'].shift(period)
             df[f'volume_lag_{period}'] = df['volume'].shift(period)
         
-        # Rolling statistics
         for window in [5, 10, 20, 50]:
             df[f'price_rolling_mean_{window}'] = df['price'].rolling(window).mean()
             df[f'price_rolling_std_{window}'] = df['price'].rolling(window).std()
             df[f'volume_rolling_mean_{window}'] = df['volume'].rolling(window).mean()
         
-        # Volatility
         df['volatility_5'] = df['price'].rolling(window=5).std()
         df['volatility_20'] = df['price'].rolling(window=20).std()
         
-        # Trend indicators
         df['price_above_sma20'] = (df['price'] > df['sma_20']).astype(int)
         df['price_above_sma50'] = (df['price'] > df['sma_50']).astype(int)
         df['ema_trend'] = (df['ema_9'] > df['ema_21']).astype(int)
@@ -144,22 +123,8 @@ def add_technical_indicators(df):
         logger.error(f"❌ Error calculating indicators: {e}")
         return df
 
-# ============================================================================
-# DATA FETCHING
-# ============================================================================
-
+# Data Fetching
 def get_bitcoin_data_realtime(days=7, interval='hour'):
-    """
-    Fetch Bitcoin data from CryptoCompare
-    
-    Args:
-        days: Number of days of historical data
-        interval: 'minute', 'hour', or 'day'
-    
-    Returns:
-        DataFrame with Bitcoin data
-    """
-    
     config = {
         'minute': {
             'url': 'https://min-api.cryptocompare.com/data/v2/histominute',
@@ -232,7 +197,6 @@ def get_bitcoin_data_realtime(days=7, interval='hour'):
             df = df[['datetime', 'open', 'high', 'low', 'price', 'volume']]
             df = df.sort_values('datetime', ascending=False).reset_index(drop=True)
             
-            # Validate
             if len(df) < DATA_CONFIG['min_data_points']:
                 logger.warning(f"⚠️ Insufficient data: {len(df)} points")
                 return None
@@ -251,7 +215,6 @@ def get_bitcoin_data_realtime(days=7, interval='hour'):
     return None
 
 def get_current_btc_price():
-    """Get current BTC price quickly"""
     try:
         url = "https://min-api.cryptocompare.com/data/price"
         params = {'fsym': 'BTC', 'tsyms': 'USD'}
@@ -266,13 +229,8 @@ def get_current_btc_price():
         logger.error(f"❌ Error getting current price: {e}")
         return None
 
-# ============================================================================
-# ML PREDICTOR CLASS
-# ============================================================================
-
+# ML Predictor
 class BitcoinMLPredictor:
-    """Machine Learning predictor for Bitcoin price"""
-    
     def __init__(self):
         self.lstm_model = None
         self.rf_model = None
@@ -286,7 +244,6 @@ class BitcoinMLPredictor:
         self.last_training = None
     
     def prepare_features(self, df):
-        """Prepare features for ML models"""
         feature_cols = [
             'rsi', 'macd', 'macd_signal', 'macd_hist',
             'bb_position', 'ema_9', 'ema_21', 'ema_50',
@@ -296,11 +253,9 @@ class BitcoinMLPredictor:
             'price_above_sma20', 'price_above_sma50', 'ema_trend'
         ]
         
-        # Add lagged features
         for lag in [1, 3, 5, 10]:
             feature_cols.extend([f'price_lag_{lag}', f'volume_lag_{lag}', f'price_change_{lag}'])
         
-        # Add rolling features
         for window in [5, 10, 20, 50]:
             feature_cols.extend([
                 f'price_rolling_mean_{window}',
@@ -308,14 +263,12 @@ class BitcoinMLPredictor:
                 f'volume_rolling_mean_{window}'
             ])
         
-        # Filter available columns
         available_features = [col for col in feature_cols if col in df.columns]
         self.feature_columns = available_features
         
         return df[available_features].copy()
     
     def create_sequences(self, data, target, sequence_length):
-        """Create sequences for LSTM"""
         X, y = [], []
         for i in range(len(data) - sequence_length):
             X.append(data[i:i + sequence_length])
@@ -323,7 +276,6 @@ class BitcoinMLPredictor:
         return np.array(X), np.array(y)
     
     def build_lstm_model(self, input_shape):
-        """Build LSTM neural network"""
         model = Sequential([
             Bidirectional(LSTM(128, return_sequences=True, dropout=0.2), input_shape=input_shape),
             Dropout(0.3),
@@ -346,7 +298,6 @@ class BitcoinMLPredictor:
         return model
     
     def train_models(self, df, epochs=50, batch_size=32):
-        """Train all ML models"""
         if not ML_AVAILABLE:
             logger.error("❌ ML libraries not available")
             return False
@@ -354,7 +305,6 @@ class BitcoinMLPredictor:
         try:
             logger.info("\n🤖 TRAINING MODELS...")
             
-            # Prepare data
             df_clean = df.dropna().copy()
             df_clean = df_clean.sort_values('datetime', ascending=True).reset_index(drop=True)
             
@@ -362,18 +312,15 @@ class BitcoinMLPredictor:
                 logger.error(f"❌ Insufficient data: {len(df_clean)}")
                 return False
             
-            # Prepare features
             features = self.prepare_features(df_clean)
             target = df_clean['price'].values
             
-            # Scale data
             scaled_features = self.feature_scaler.fit_transform(features)
             scaled_target = self.price_scaler.fit_transform(target.reshape(-1, 1)).flatten()
             
-            # Split data (80/20)
             split_idx = int(len(df_clean) * 0.8)
             
-            # ===== LSTM MODEL =====
+            # LSTM
             logger.info("📈 Training LSTM...")
             X_lstm, y_lstm = self.create_sequences(scaled_features, scaled_target, self.sequence_length)
             
@@ -384,7 +331,6 @@ class BitcoinMLPredictor:
             
             self.lstm_model = self.build_lstm_model((self.sequence_length, len(self.feature_columns)))
             
-            # Callbacks
             early_stop = EarlyStopping(
                 monitor='val_loss',
                 patience=MODEL_CONFIG['lstm']['patience'],
@@ -407,7 +353,6 @@ class BitcoinMLPredictor:
                 verbose=0
             )
             
-            # Train
             self.lstm_model.fit(
                 X_train_lstm, y_train_lstm,
                 validation_data=(X_test_lstm, y_test_lstm),
@@ -417,7 +362,6 @@ class BitcoinMLPredictor:
                 verbose=0
             )
             
-            # Evaluate LSTM
             lstm_pred = self.lstm_model.predict(X_test_lstm, verbose=0)
             y_test_original = self.price_scaler.inverse_transform(y_test_lstm.reshape(-1, 1)).flatten()
             lstm_pred_original = self.price_scaler.inverse_transform(lstm_pred).flatten()
@@ -432,7 +376,7 @@ class BitcoinMLPredictor:
             
             logger.info(f"✅ LSTM trained - MAE: ${lstm_mae:,.2f}, RMSE: ${lstm_rmse:,.2f}")
             
-            # ===== RANDOM FOREST =====
+            # Random Forest
             logger.info("🌲 Training Random Forest...")
             
             y_class = (df_clean['price'].shift(-1) > df_clean['price']).astype(int)
@@ -462,7 +406,7 @@ class BitcoinMLPredictor:
             
             logger.info(f"✅ RF trained - Accuracy: {rf_accuracy:.4f}")
             
-            # ===== GRADIENT BOOSTING =====
+            # Gradient Boosting
             logger.info("🚀 Training Gradient Boosting...")
             
             X_train_gb = features_rf[:split_idx]
@@ -499,7 +443,6 @@ class BitcoinMLPredictor:
             
             logger.info("✅ ALL MODELS TRAINED SUCCESSFULLY!\n")
             
-            # Save models
             self.save_models()
             
             return True
@@ -511,46 +454,67 @@ class BitcoinMLPredictor:
             return False
     
     def predict(self, df, timeframe_minutes):
-        """Make prediction using ensemble of models"""
+        """FIXED prediction for ultra short timeframes"""
         if not self.is_trained:
             logger.warning("⚠️ Models not trained")
             return None
         
         try:
-            # Prepare data
+            category = get_timeframe_category(timeframe_minutes)
+            
+            # CRITICAL FIX: Use appropriate sequence length
+            if category == 'ultra_short':
+                sequence_length = MODEL_CONFIG['lstm']['ultra_short_sequence']
+            else:
+                sequence_length = self.sequence_length
+            
             df_clean = df.dropna().copy()
             df_clean = df_clean.sort_values('datetime', ascending=True).reset_index(drop=True)
+            
+            # CRITICAL FIX: Ensure enough data
+            min_required = sequence_length + 10
+            if len(df_clean) < min_required:
+                logger.warning(f"⚠️ Insufficient data: {len(df_clean)} < {min_required}")
+                return None
             
             features = self.prepare_features(df_clean)
             scaled_features = self.feature_scaler.transform(features)
             
             current_price = df_clean.iloc[-1]['price']
             
-            # LSTM Prediction
-            lstm_input = scaled_features[-self.sequence_length:].reshape(1, self.sequence_length, -1)
+            # LSTM with adjusted sequence
+            lstm_input = scaled_features[-sequence_length:].reshape(1, sequence_length, -1)
             lstm_pred_scaled = self.lstm_model.predict(lstm_input, verbose=0)[0][0]
             lstm_pred = self.price_scaler.inverse_transform([[lstm_pred_scaled]])[0][0]
             
-            # Random Forest Prediction
+            # RF
             rf_input = scaled_features[-1:].reshape(1, -1)
             rf_direction = self.rf_model.predict(rf_input)[0]
             rf_proba = self.rf_model.predict_proba(rf_input)[0]
             rf_confidence = max(rf_proba) * 100
             
-            # Gradient Boosting Prediction
+            # GB
             gb_pred_scaled = self.gb_model.predict(rf_input)[0]
             gb_pred = self.price_scaler.inverse_transform([[gb_pred_scaled]])[0][0]
             
-            # Ensemble prediction
-            time_factor = min(timeframe_minutes / 60, 2)
+            # CRITICAL FIX: Adjusted time factor for ultra short
+            if category == 'ultra_short':
+                time_factor = min(timeframe_minutes / 30, 1.0)  # Reduced scaling
+            else:
+                time_factor = min(timeframe_minutes / 60, 2)
             
             predicted_change_lstm = (lstm_pred - current_price) * time_factor
             predicted_change_gb = (gb_pred - current_price) * time_factor
             
-            # Weighted ensemble
-            lstm_weight = 0.4
-            gb_weight = 0.4
-            rf_weight = 0.2
+            # CRITICAL FIX: Different weights for ultra short
+            if category == 'ultra_short':
+                lstm_weight = 0.35
+                gb_weight = 0.35
+                rf_weight = 0.30  # Higher RF weight for short term
+            else:
+                lstm_weight = 0.4
+                gb_weight = 0.4
+                rf_weight = 0.2
             
             ensemble_change = (
                 lstm_weight * predicted_change_lstm +
@@ -559,7 +523,7 @@ class BitcoinMLPredictor:
             
             predicted_price = current_price + ensemble_change
             
-            # Calculate confidence
+            # Confidence calculation
             model_agreement = 0
             if (predicted_change_lstm > 0) == (predicted_change_gb > 0) == (rf_direction == 1):
                 model_agreement = 3
@@ -570,18 +534,24 @@ class BitcoinMLPredictor:
             else:
                 model_agreement = 1
             
-            confidence = min(50 + (model_agreement * 15) + (rf_confidence - 50) * 0.3, 95)
-            
-            # Determine trend
-            if ensemble_change > 0:
-                trend = "CALL (Bullish)"
+            # CRITICAL FIX: Adjusted confidence for ultra short
+            if category == 'ultra_short':
+                base_confidence = 45
+                confidence = min(base_confidence + (model_agreement * 12) + (rf_confidence - 50) * 0.4, 85)
             else:
-                trend = "PUT (Bearish)"
+                confidence = min(50 + (model_agreement * 15) + (rf_confidence - 50) * 0.3, 95)
             
-            # Calculate price range
+            trend = "CALL (Bullish)" if ensemble_change > 0 else "PUT (Bearish)"
+            
+            # CRITICAL FIX: Tighter range for ultra short
             volatility = df_clean['price'].tail(20).std()
-            price_range_low = predicted_price - volatility * time_factor
-            price_range_high = predicted_price + volatility * time_factor
+            if category == 'ultra_short':
+                range_multiplier = 0.5 * time_factor
+            else:
+                range_multiplier = time_factor
+            
+            price_range_low = predicted_price - volatility * range_multiplier
+            price_range_high = predicted_price + volatility * range_multiplier
             
             return {
                 'current_price': current_price,
@@ -599,8 +569,10 @@ class BitcoinMLPredictor:
                 'model_agreement': model_agreement,
                 'timeframe_minutes': timeframe_minutes,
                 'volatility': volatility,
-                'method': 'ML Ensemble (LSTM + RF + GB)',
-                'model_metrics': self.metrics
+                'method': f'ML Ensemble ({category})',
+                'model_metrics': self.metrics,
+                'category': category,
+                'time_factor': time_factor
             }
             
         except Exception as e:
@@ -610,7 +582,6 @@ class BitcoinMLPredictor:
             return None
     
     def save_models(self):
-        """Save trained models"""
         try:
             path = MODEL_CONFIG['model_save_path']
             os.makedirs(path, exist_ok=True)
@@ -626,7 +597,6 @@ class BitcoinMLPredictor:
                 with open(f'{path}/gb_model.pkl', 'wb') as f:
                     pickle.dump(self.gb_model, f)
             
-            # Save scalers and metadata
             with open(f'{path}/scalers.pkl', 'wb') as f:
                 pickle.dump({
                     'price_scaler': self.price_scaler,
@@ -644,7 +614,6 @@ class BitcoinMLPredictor:
             return False
     
     def load_models(self):
-        """Load trained models"""
         try:
             path = MODEL_CONFIG['model_save_path']
             
@@ -678,7 +647,6 @@ class BitcoinMLPredictor:
             return False
     
     def needs_retraining(self):
-        """Check if models need retraining"""
         if not self.is_trained or not self.last_training:
             return True
         
