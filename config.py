@@ -266,8 +266,8 @@ STRATEGY_CONFIG = {
 # Backtesting Configuration - NEW
 BACKTEST_CONFIG = {
     'enable_backtesting': True,
-    'backtest_on_startup': True,
-    'backtest_before_trading': True,
+    'backtest_on_startup': False,
+    'backtest_before_trading': False,
     'min_backtest_winrate': 52.0,  # Minimum 52% to go live
     'backtest_sample_size': 100,    # Minimum predictions to validate
     'backtest_periods': [7, 14, 30],  # Days to backtest

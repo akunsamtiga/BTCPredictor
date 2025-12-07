@@ -10,6 +10,8 @@ Type=simple
 User=stcautotrade
 Group=stcautotrade
 WorkingDirectory=/home/stcautotrade/btc-predictor
+
+# Environment variables
 Environment="PATH=/home/stcautotrade/btc-predictor/venv/bin:/usr/local/bin:/usr/bin:/bin"
 Environment="PYTHONUNBUFFERED=1"
 Environment="PYTHONPATH=/home/stcautotrade/btc-predictor"
@@ -18,14 +20,17 @@ Environment="OMP_NUM_THREADS=2"
 Environment="TF_NUM_INTEROP_THREADS=1"
 Environment="TF_NUM_INTRAOP_THREADS=2"
 
-# Main command
-ExecStart=/bin/bash -c 'cd /home/stcautotrade/btc-predictor && source venv/bin/activate && exec python3 scheduler.py 2>&1 | tee -a logs/service.log'
+# Load .env file (PENTING!)
+EnvironmentFile=/home/stcautotrade/btc-predictor/.env
 
-# ALWAYS restart - ini yang paling penting
+# Main command - SIMPLIFIED (remove tee for better systemd logging)
+ExecStart=/home/stcautotrade/btc-predictor/venv/bin/python3 /home/stcautotrade/btc-predictor/scheduler.py
+
+# ALWAYS restart
 Restart=always
 RestartSec=10
 
-# Restart limits - lebih permisif
+# Restart limits
 StartLimitBurst=10
 StartLimitIntervalSec=300
 
@@ -38,7 +43,7 @@ MemoryMax=3G
 MemoryHigh=2.5G
 CPUQuota=150%
 
-# Logging
+# Logging - systemd will handle this
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=btc-predictor
@@ -49,8 +54,10 @@ PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=read-only
 ReadWritePaths=/home/stcautotrade/btc-predictor
+ReadWritePaths=/home/stcautotrade/btc-predictor/logs
+ReadWritePaths=/home/stcautotrade/btc-predictor/models
 
-# Kill mode - pastikan semua proses mati
+# Kill mode
 KillMode=mixed
 KillSignal=SIGTERM
 SendSIGKILL=yes
