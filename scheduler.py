@@ -11,11 +11,11 @@ import signal
 import sys
 import os
 import psutil
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, List
 
 from config import (
-    PREDICTION_CONFIG, MODEL_CONFIG, HEALTH_CONFIG, BACKTEST_CONFIG,
+    PREDICTION_CONFIG, MODEL_CONFIG, HEALTH_CONFIG, BACKTEST_CONFIG, STRATEGY_CONFIG,
     get_timeframe_category, get_timeframe_label, is_paper_trading,
     is_production, get_config_summary
 )
