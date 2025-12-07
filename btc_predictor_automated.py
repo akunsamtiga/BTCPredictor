@@ -542,17 +542,22 @@ class ImprovedBitcoinPredictor:
             
             # Random Forest Training
             logger.info("\n🌲 Training Random Forest...")
-            
+
             # Classification target (direction)
             y_class = (df_clean['price'].shift(-1) > df_clean['price']).astype(int)
-            y_class = y_class[:-1]
-            features_rf = scaled_features[:-1]
-            
-            X_train_rf = features_rf[train_idx]
-            X_test_rf = features_rf[test_idx]
-            y_train_rf = y_class[train_idx]
-            y_test_rf = y_class[test_idx]
-            
+            y_class = y_class.iloc[:-1].values  # Remove last row, convert to numpy
+            features_rf = scaled_features[:-1]  # Same length as y_class
+
+            # Adjust indices to match features_rf length
+            max_idx = len(features_rf)
+            train_idx_rf = train_idx[train_idx < max_idx]  
+            test_idx_rf = test_idx[test_idx < max_idx]
+
+            X_train_rf = features_rf[train_idx_rf]
+            X_test_rf = features_rf[test_idx_rf]
+            y_train_rf = y_class[train_idx_rf]
+            y_test_rf = y_class[test_idx_rf]
+
             self.rf_model = RandomForestClassifier(
                 n_estimators=MODEL_CONFIG['rf']['n_estimators'],
                 max_depth=MODEL_CONFIG['rf']['max_depth'],
@@ -575,14 +580,14 @@ class ImprovedBitcoinPredictor:
             }
             
             logger.info(f"✅ RF - Accuracy: {rf_accuracy:.4f}")
-            
-            # Gradient Boosting Training
+
             logger.info("\n🚀 Training Gradient Boosting...")
-            
-            X_train_gb = features_rf[train_idx]
-            X_test_gb = features_rf[test_idx]
-            y_train_gb = scaled_target[:-1][train_idx]
-            y_test_gb = scaled_target[:-1][test_idx]
+
+            # Use same filtered indices
+            X_train_gb = features_rf[train_idx_rf]  # ✅ FIX: Use filtered indices
+            X_test_gb = features_rf[test_idx_rf]
+            y_train_gb = scaled_target[:-1][train_idx_rf]
+            y_test_gb = scaled_target[:-1][test_idx_rf]
             
             self.gb_model = GradientBoostingRegressor(
                 n_estimators=MODEL_CONFIG['gb']['n_estimators'],
