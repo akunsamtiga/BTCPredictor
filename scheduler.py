@@ -1,6 +1,6 @@
 """
-Improved Scheduler with All Enhancements
-Includes: Backtesting, Alerting, Caching, Better Error Handling
+FIXED Scheduler - NO BACKTEST
+Simplified and focused on accurate predictions
 """
 
 import time
@@ -15,7 +15,7 @@ from datetime import datetime, timedelta
 from typing import Dict, List
 
 from config import (
-    PREDICTION_CONFIG, MODEL_CONFIG, HEALTH_CONFIG, BACKTEST_CONFIG, STRATEGY_CONFIG,
+    PREDICTION_CONFIG, MODEL_CONFIG, HEALTH_CONFIG, STRATEGY_CONFIG,
     get_timeframe_category, get_timeframe_label, is_paper_trading,
     is_production, get_config_summary
 )
@@ -23,7 +23,6 @@ from firebase_manager import FirebaseManager
 from system_health import SystemHealthMonitor
 from heartbeat import HeartbeatManager
 from alert_system import get_alert_manager, AlertSeverity
-from backtest import BacktestEngine, run_comprehensive_backtest
 from cache_manager import get_cache
 from btc_predictor_automated import ImprovedBitcoinPredictor
 from btc_predictor_automated import (
@@ -33,7 +32,6 @@ from btc_predictor_automated import (
 )
 from timezone_utils import get_local_now
 
-# Setup logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -48,18 +46,16 @@ logger = logging.getLogger(__name__)
 class WatchdogTimer:
     """Watchdog timer to detect hanging processes"""
     
-    def __init__(self, timeout=1200):  # 20 minutes
+    def __init__(self, timeout=1200):
         self.timeout = timeout
         self.last_activity = time.time()
         self.is_running = False
         self.thread = None
     
     def reset(self):
-        """Reset watchdog timer"""
         self.last_activity = time.time()
     
     def start(self):
-        """Start watchdog monitoring"""
         import threading
         self.is_running = True
         self.thread = threading.Thread(target=self._monitor, daemon=True)
@@ -67,11 +63,9 @@ class WatchdogTimer:
         logger.info(f"🐕 Watchdog started (timeout: {self.timeout}s)")
     
     def stop(self):
-        """Stop watchdog"""
         self.is_running = False
     
     def _monitor(self):
-        """Monitor for hanging"""
         while self.is_running:
             time.sleep(30)
             elapsed = time.time() - self.last_activity
@@ -83,7 +77,7 @@ class WatchdogTimer:
 
 
 class ImprovedScheduler:
-    """Improved scheduler with all enhancements"""
+    """Improved scheduler - SIMPLIFIED, NO BACKTEST"""
     
     def __init__(self):
         self.predictor = None
@@ -91,14 +85,12 @@ class ImprovedScheduler:
         self.health_monitor = SystemHealthMonitor()
         self.heartbeat = None
         self.alert_manager = None
-        self.backtest_engine = None
         self.cache = get_cache()
         self.watchdog = WatchdogTimer(timeout=HEALTH_CONFIG['watchdog_timeout'])
         self.is_running = False
         
         # Timeframe management
-        self.active_timeframes = []
-        self.enabled_timeframes = set()
+        self.active_timeframes = PREDICTION_CONFIG['active_timeframes']
         self.last_prediction_time = {}
         self.prediction_counters = {}
         
@@ -109,11 +101,11 @@ class ImprovedScheduler:
         self.failed_predictions = 0
         self.last_successful_prediction = None
         
-        # Recent performance for confidence calculation
+        # Recent performance
         self.recent_results = []
         self.recent_accuracy = None
         
-        # Cooldown management
+        # Cooldown
         self.loss_streak = 0
         self.cooldown_until = None
         
@@ -124,11 +116,14 @@ class ImprovedScheduler:
         signal.signal(signal.SIGINT, self._signal_handler)
         signal.signal(signal.SIGTERM, self._signal_handler)
         
-        logger.info("🚀 Improved Scheduler initialized")
-        logger.info(f"Configuration: {get_config_summary()}")
+        # Initialize counters
+        for tf in self.active_timeframes:
+            self.prediction_counters[tf] = 0
+        
+        logger.info("🚀 Improved Scheduler initialized (NO BACKTEST)")
+        logger.info(f"Active timeframes: {[get_timeframe_label(tf) for tf in self.active_timeframes]}")
     
     def _signal_handler(self, signum, frame):
-        """Handle shutdown signals gracefully"""
         logger.info(f"\n⚠️ Received signal {signum}, shutting down...")
         if self.alert_manager:
             self.alert_manager.alert_system_shutdown("signal received")
@@ -151,7 +146,6 @@ class ImprovedScheduler:
                 
                 self._aggressive_memory_cleanup()
                 
-                # Check again
                 mem_mb = process.memory_info().rss / 1024 / 1024
                 if mem_mb > max_memory * 1.2:
                     logger.error(f"❌ Memory still high: {mem_mb:.0f}MB")
@@ -176,10 +170,8 @@ class ImprovedScheduler:
         try:
             logger.info("🧹 Running memory cleanup...")
             
-            # Clear cache
             self.cache.clear()
             
-            # Clear TensorFlow session
             try:
                 import tensorflow as tf
                 from keras import backend as K
@@ -188,7 +180,6 @@ class ImprovedScheduler:
             except:
                 pass
             
-            # Force GC
             for _ in range(3):
                 gc.collect()
             
@@ -217,14 +208,6 @@ class ImprovedScheduler:
             # Initialize models
             if not self.initialize_models():
                 return False
-            
-            # Run backtesting if enabled
-            if BACKTEST_CONFIG.get('backtest_on_startup'):
-                if not self.run_backtest():
-                    logger.warning("⚠️ Backtest failed, but continuing...")
-            
-            # Set active timeframes
-            self._set_active_timeframes()
             
             # Send startup alert
             if self.alert_manager:
@@ -350,74 +333,6 @@ class ImprovedScheduler:
                 self.alert_manager.alert_model_retrain(False)
             return False
     
-    def run_backtest(self) -> bool:
-        """Run comprehensive backtest"""
-        try:
-            logger.info(f"\n{'='*80}")
-            logger.info("🧪 RUNNING BACKTEST")
-            logger.info(f"{'='*80}")
-            
-            timeframes_to_test = PREDICTION_CONFIG['active_timeframes']
-            
-            self.backtest_engine = run_comprehensive_backtest(
-                self.predictor,
-                get_bitcoin_data_realtime,
-                timeframes_to_test,
-                self.firebase
-            )
-            
-            # Check which timeframes passed
-            passed_timeframes = []
-            failed_timeframes = []
-            
-            for tf in timeframes_to_test:
-                if self.backtest_engine.should_enable_timeframe(tf):
-                    passed_timeframes.append(tf)
-                else:
-                    failed_timeframes.append(tf)
-                    label = get_timeframe_label(tf)
-                    
-                    # Alert on failed backtest
-                    if self.alert_manager and tf in self.backtest_engine.results:
-                        results = self.backtest_engine.results[tf]
-                        avg_winrate = sum(r.win_rate for r in results.values()) / len(results)
-                        min_winrate = BACKTEST_CONFIG.get('min_backtest_winrate', 52.0)
-                        
-                        self.alert_manager.alert_backtest_failed(label, avg_winrate, min_winrate)
-            
-            logger.info(f"\n✅ Backtest completed:")
-            logger.info(f"   Passed: {len(passed_timeframes)} timeframes")
-            logger.info(f"   Failed: {len(failed_timeframes)} timeframes")
-            
-            if len(passed_timeframes) == 0:
-                logger.error("❌ No timeframes passed backtest!")
-                return False
-            
-            return True
-            
-        except Exception as e:
-            logger.error(f"❌ Backtest error: {e}")
-            return False
-    
-    def _set_active_timeframes(self):
-        """Set active timeframes based on backtest results"""
-        if self.backtest_engine and BACKTEST_CONFIG.get('backtest_before_trading'):
-            # Only enable timeframes that passed backtest
-            self.active_timeframes = [
-                tf for tf in PREDICTION_CONFIG['active_timeframes']
-                if self.backtest_engine.should_enable_timeframe(tf)
-            ]
-        else:
-            # Use all configured timeframes
-            self.active_timeframes = PREDICTION_CONFIG['active_timeframes']
-        
-        self.enabled_timeframes = set(self.active_timeframes)
-        
-        for tf in self.active_timeframes:
-            self.prediction_counters[tf] = 0
-        
-        logger.info(f"\n📋 Active timeframes: {[get_timeframe_label(tf) for tf in self.active_timeframes]}")
-    
     def _check_cooldown(self) -> bool:
         """Check if system is in cooldown"""
         if self.cooldown_until and datetime.now() < self.cooldown_until:
@@ -478,7 +393,6 @@ class ImprovedScheduler:
             
             for category in categories_needed:
                 from config import get_data_config_for_timeframe
-                # Use first timeframe in category to get config
                 sample_tf = next((tf for tf in self.active_timeframes 
                                  if get_timeframe_category(tf) == category), None)
                 
@@ -498,7 +412,7 @@ class ImprovedScheduler:
                         
                         if df is not None:
                             df = add_technical_indicators(df)
-                            self.cache.set(cache_key, df, ttl=300)  # 5 minutes
+                            self.cache.set(cache_key, df, ttl=300)
                             data_by_category[category] = df
                     else:
                         logger.info(f"📦 Using cached {category} data")
@@ -534,7 +448,7 @@ class ImprovedScheduler:
                     if prediction:
                         self._display_prediction(prediction)
                         
-                        # Save to Firebase if not paper trading or if allowed
+                        # Save to Firebase
                         if self.firebase and self.firebase.connected:
                             doc_id = self.firebase.save_prediction(prediction)
                             
@@ -549,7 +463,7 @@ class ImprovedScheduler:
                             else:
                                 self.failed_predictions += 1
                     else:
-                        logger.info(f"⏭️ Skipped (low confidence)")
+                        logger.info(f"⭕ Skipped (low confidence)")
                         
                 except Exception as e:
                     logger.error(f"❌ Error predicting {get_timeframe_label(tf)}: {e}")
@@ -561,7 +475,7 @@ class ImprovedScheduler:
             # Check for stagnation
             if self.last_successful_prediction:
                 time_since = (datetime.now() - self.last_successful_prediction).total_seconds()
-                if time_since > 600:  # 10 minutes
+                if time_since > 600:
                     logger.error(f"❌ No successful predictions for {time_since:.0f}s")
                     if self.alert_manager:
                         self.alert_manager.send_alert(
@@ -601,7 +515,7 @@ class ImprovedScheduler:
                    f"Confidence: {prediction['confidence']:.1f}%")
     
     def validate_predictions(self):
-        """Validate predictions and update statistics"""
+        """FIXED: Validate predictions correctly"""
         try:
             self.watchdog.reset()
             
@@ -623,11 +537,12 @@ class ImprovedScheduler:
             
             for pred in predictions:
                 try:
-                    # Validate
+                    # FIXED: Pass current_price from prediction
                     result = self.firebase.validate_prediction(
                         pred['doc_id'],
-                        current_price,
+                        current_price,  # actual_price
                         pred['predicted_price'],
+                        pred['current_price'],  # PENTING: current price saat prediksi dibuat
                         pred['trend']
                     )
                     
@@ -635,7 +550,7 @@ class ImprovedScheduler:
                         validated_count += 1
                         
                         # Track result
-                        is_win = 'WIN' in str(result).upper()
+                        is_win = 'WIN' in str(pred.get('validation_result', '')).upper()
                         self.recent_results.append(is_win)
                         
                         # Keep only last 100 results
@@ -699,11 +614,9 @@ class ImprovedScheduler:
                         tf_winrate = tf_stats.get('win_rate', 0)
                         label = get_timeframe_label(tf)
                         
-                        # Alert on low win rate
                         if self.alert_manager:
                             self.alert_manager.alert_low_winrate(tf_winrate, label)
                         
-                        # Alert on good performance
                         if tf_winrate >= 65:
                             if self.alert_manager:
                                 self.alert_manager.alert_good_performance(label, tf_winrate)
@@ -757,7 +670,7 @@ class ImprovedScheduler:
     def start(self):
         """Start scheduler"""
         logger.info(f"\n{'='*80}")
-        logger.info("🚀 STARTING BITCOIN PREDICTOR")
+        logger.info("🚀 STARTING BITCOIN PREDICTOR (FIXED)")
         logger.info(f"{'='*80}")
         logger.info(f"Environment: {os.getenv('ENVIRONMENT', 'development')}")
         logger.info(f"Trading Mode: {os.getenv('TRADING_MODE', 'paper')}")
@@ -839,7 +752,6 @@ class ImprovedScheduler:
 def main():
     """Main entry point"""
     try:
-        # Validate environment first
         from config import validate_environment
         validate_environment()
         

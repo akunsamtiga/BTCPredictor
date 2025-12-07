@@ -1,6 +1,6 @@
 """
-Enhanced Maintenance and Cleanup Utilities for Bitcoin Predictor
-Multi-Timeframe Support with Category-Based Operations
+FIXED Maintenance Tools
+Corrected validation logic
 """
 
 import sys
@@ -36,7 +36,7 @@ def print_section(text):
 
 def cleanup_old_data(days=30):
     """Clean up data older than specified days"""
-    print_header(f"🗑️  Cleaning Up Data Older Than {days} Days")
+    print_header(f"🗑️ Cleaning Up Data Older Than {days} Days")
     
     try:
         fb = FirebaseManager()
@@ -45,46 +45,6 @@ def cleanup_old_data(days=30):
         fb.cleanup_old_data(days)
         
         print(f"\n✅ Cleanup completed successfully")
-        
-    except Exception as e:
-        print(f"\n❌ Cleanup failed: {e}")
-
-
-def cleanup_by_category(category, days=30):
-    """Clean up predictions for specific timeframe category"""
-    print_header(f"🗑️  Cleaning Up {category.upper()} Category (>{days} days)")
-    
-    try:
-        fb = FirebaseManager()
-        
-        # Get timeframes for this category
-        timeframes = PREDICTION_CONFIG[f'{category}_timeframes']
-        
-        print(f"\nTimeframes in {category}: {[get_timeframe_label(tf) for tf in timeframes]}")
-        print(f"Cleaning up predictions older than {days} days...")
-        
-        cutoff_date = datetime.now() - timedelta(days=days)
-        cutoff_iso = cutoff_date.isoformat()
-        
-        collection = fb.firestore_db.collection('bitcoin_predictions')
-        total_deleted = 0
-        
-        for tf in timeframes:
-            # Query old predictions for this timeframe
-            old_docs = collection.where('timeframe_minutes', '==', tf) \
-                                .where('timestamp', '<', cutoff_iso) \
-                                .limit(100).stream()
-            
-            count = 0
-            for doc in old_docs:
-                doc.reference.delete()
-                count += 1
-            
-            if count > 0:
-                total_deleted += count
-                print(f"  ✅ {get_timeframe_label(tf):6}: Deleted {count} predictions")
-        
-        print(f"\n✅ Cleanup completed: {total_deleted} predictions deleted")
         
     except Exception as e:
         print(f"\n❌ Cleanup failed: {e}")
@@ -136,7 +96,7 @@ def force_retrain_models():
 
 
 def validate_all_pending():
-    """Validate all pending predictions manually"""
+    """FIXED: Validate all pending predictions with correct logic"""
     print_header("✅ Validating All Pending Predictions")
     
     try:
@@ -179,11 +139,19 @@ def validate_all_pending():
         for pred in predictions:
             doc_id = pred['doc_id']
             predicted_price = pred['predicted_price']
+            original_price = pred['current_price']  # PENTING: Harga saat prediksi dibuat
             trend = pred['trend']
             timeframe = pred['timeframe_minutes']
             category = get_timeframe_category(timeframe)
             
-            success = fb.validate_prediction(doc_id, current_price, predicted_price, trend)
+            # FIXED: Pass both actual_price and original current_price
+            success = fb.validate_prediction(
+                doc_id, 
+                current_price,      # actual_price (harga sekarang)
+                predicted_price,    # predicted_price
+                original_price,     # current_price (harga saat prediksi)
+                trend
+            )
             
             if success:
                 validated_by_category[category] += 1
@@ -201,6 +169,8 @@ def validate_all_pending():
         
     except Exception as e:
         print(f"\n❌ Validation failed: {e}")
+        import traceback
+        traceback.print_exc()
 
 
 def validate_category(category):
@@ -243,6 +213,7 @@ def validate_category(category):
                 pred['doc_id'],
                 current_price,
                 pred['predicted_price'],
+                pred['current_price'],  # FIXED
                 pred['trend']
             )
             if success:
@@ -258,7 +229,7 @@ def reset_statistics():
     """Recalculate and reset all statistics"""
     print_header("📊 Resetting Statistics")
     
-    confirm = input("\n⚠️  This will recalculate all statistics. Continue? (yes/no): ")
+    confirm = input("\n⚠️ This will recalculate all statistics. Continue? (yes/no): ")
     
     if confirm.lower() != 'yes':
         print("❌ Cancelled")
@@ -295,31 +266,6 @@ def reset_statistics():
                     print(f"  ✅ {label:6}: {stats['win_rate']:.1f}% win rate ({stats['total_predictions']} preds)")
         
         print("\n✅ Statistics reset completed")
-        
-    except Exception as e:
-        print(f"\n❌ Reset failed: {e}")
-
-
-def reset_category_statistics(category):
-    """Reset statistics for specific category"""
-    print_header(f"📊 Resetting {category.upper()} Statistics")
-    
-    try:
-        fb = FirebaseManager()
-        
-        timeframes = PREDICTION_CONFIG[f'{category}_timeframes']
-        
-        print(f"\nTimeframes: {[get_timeframe_label(tf) for tf in timeframes]}")
-        print("Recalculating...")
-        
-        for tf in timeframes:
-            stats = fb.get_statistics(timeframe_minutes=tf, days=30)
-            if stats and stats['total_predictions'] > 0:
-                fb.save_statistics(stats)
-                label = get_timeframe_label(tf)
-                print(f"  ✅ {label:6}: {stats['win_rate']:.1f}% ({stats['total_predictions']} preds)")
-        
-        print("\n✅ Category statistics reset completed")
         
     except Exception as e:
         print(f"\n❌ Reset failed: {e}")
@@ -381,7 +327,7 @@ def export_predictions_csv(days=7, filename=None, category=None):
             })
         
         if not predictions:
-            print("⚠️  No validated predictions found")
+            print("⚠️ No validated predictions found")
             return
         
         df = pd.DataFrame(predictions)
@@ -398,129 +344,6 @@ def export_predictions_csv(days=7, filename=None, category=None):
         
     except Exception as e:
         print(f"\n❌ Export failed: {e}")
-
-
-def export_category_report(category, days=7):
-    """Export detailed report for specific category"""
-    print_header(f"📄 Exporting {category.upper()} Detailed Report")
-    
-    try:
-        fb = FirebaseManager()
-        
-        filename = f"report_{category}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
-        
-        timeframes = PREDICTION_CONFIG[f'{category}_timeframes']
-        
-        with open(filename, 'w', encoding='utf-8') as f:
-            f.write("="*80 + "\n")
-            f.write(f"BITCOIN PREDICTOR - {category.upper()} CATEGORY REPORT\n")
-            f.write(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-            f.write(f"Period: Last {days} days\n")
-            f.write("="*80 + "\n\n")
-            
-            f.write(f"TIMEFRAMES IN CATEGORY:\n")
-            f.write(f"{[get_timeframe_label(tf) for tf in timeframes]}\n\n")
-            
-            total_predictions = 0
-            total_wins = 0
-            total_error = 0
-            
-            for tf in timeframes:
-                stats = fb.get_statistics(timeframe_minutes=tf, days=days)
-                
-                if stats and stats.get('total_predictions', 0) > 0:
-                    label = get_timeframe_label(tf)
-                    f.write(f"\n{label} STATISTICS\n")
-                    f.write("-"*80 + "\n")
-                    f.write(f"Total Predictions: {stats['total_predictions']}\n")
-                    f.write(f"Wins: {stats['wins']}\n")
-                    f.write(f"Losses: {stats['losses']}\n")
-                    f.write(f"Win Rate: {stats['win_rate']:.2f}%\n")
-                    f.write(f"Average Error: ${stats['avg_error']:.2f}\n")
-                    f.write(f"Average Error %: {stats['avg_error_pct']:.2f}%\n")
-                    
-                    total_predictions += stats['total_predictions']
-                    total_wins += stats['wins']
-                    total_error += stats['avg_error'] * stats['total_predictions']
-            
-            # Category summary
-            if total_predictions > 0:
-                avg_win_rate = (total_wins / total_predictions) * 100
-                avg_error = total_error / total_predictions
-                
-                f.write(f"\n\nCATEGORY SUMMARY\n")
-                f.write("="*80 + "\n")
-                f.write(f"Total Predictions: {total_predictions}\n")
-                f.write(f"Total Wins: {total_wins}\n")
-                f.write(f"Average Win Rate: {avg_win_rate:.2f}%\n")
-                f.write(f"Average Error: ${avg_error:.2f}\n")
-        
-        print(f"✅ Report exported to: {filename}")
-        
-    except Exception as e:
-        print(f"❌ Export failed: {e}")
-
-
-def backup_models(backup_name=None):
-    """Backup trained models"""
-    print_header("💾 Backing Up Models")
-    
-    try:
-        import shutil
-        
-        if backup_name is None:
-            backup_name = f"models_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        
-        models_dir = "models"
-        backup_dir = backup_name
-        
-        if not os.path.exists(models_dir):
-            print("❌ Models directory not found")
-            return
-        
-        print(f"\n📦 Creating backup: {backup_dir}")
-        
-        shutil.copytree(models_dir, backup_dir)
-        
-        print(f"✅ Backup created successfully")
-        print(f"   Location: {os.path.abspath(backup_dir)}")
-        
-    except Exception as e:
-        print(f"\n❌ Backup failed: {e}")
-
-
-def restore_models(backup_dir):
-    """Restore models from backup"""
-    print_header(f"📥 Restoring Models from {backup_dir}")
-    
-    confirm = input("\n⚠️  This will overwrite current models. Continue? (yes/no): ")
-    
-    if confirm.lower() != 'yes':
-        print("❌ Cancelled")
-        return
-    
-    try:
-        import shutil
-        
-        models_dir = "models"
-        
-        if not os.path.exists(backup_dir):
-            print(f"❌ Backup directory not found: {backup_dir}")
-            return
-        
-        # Remove current models
-        if os.path.exists(models_dir):
-            print("🗑️  Removing current models...")
-            shutil.rmtree(models_dir)
-        
-        # Restore backup
-        print(f"📦 Restoring from {backup_dir}...")
-        shutil.copytree(backup_dir, models_dir)
-        
-        print("✅ Models restored successfully")
-        
-    except Exception as e:
-        print(f"\n❌ Restore failed: {e}")
 
 
 def show_disk_usage():
@@ -564,28 +387,22 @@ def show_disk_usage():
 
 def main():
     """Main menu"""
-    print_header("🔧 Bitcoin Predictor - Enhanced Maintenance Tools")
+    print_header("🔧 Bitcoin Predictor - Maintenance Tools (FIXED)")
     
     while True:
         print("\n" + "=" * 80)
         print("MENU:")
-        print("  1. Cleanup Old Data (All)")
-        print("  2. Cleanup by Category")
-        print("  3. Force Retrain Models")
-        print("  4. Validate All Pending")
-        print("  5. Validate by Category")
-        print("  6. Reset Statistics (All)")
-        print("  7. Reset Statistics by Category")
-        print("  8. Export Predictions CSV (All)")
-        print("  9. Export Predictions by Category")
-        print(" 10. Export Category Report")
-        print(" 11. Backup Models")
-        print(" 12. Restore Models")
-        print(" 13. Show Disk Usage")
+        print("  1. Cleanup Old Data")
+        print("  2. Force Retrain Models")
+        print("  3. Validate All Pending")
+        print("  4. Validate by Category")
+        print("  5. Reset Statistics")
+        print("  6. Export Predictions CSV")
+        print("  7. Show Disk Usage")
         print("  0. Exit")
         print("=" * 80)
         
-        choice = input("\nSelect option (0-13): ").strip()
+        choice = input("\nSelect option (0-7): ").strip()
         
         if choice == '1':
             days = input("Delete data older than how many days? (default 30): ").strip()
@@ -593,26 +410,12 @@ def main():
             cleanup_old_data(days)
             
         elif choice == '2':
-            print("\nCategories:")
-            print("  1. ultra_short")
-            print("  2. short")
-            print("  3. medium")
-            print("  4. long")
-            cat_choice = input("Select category (1-4): ").strip()
-            categories = ['ultra_short', 'short', 'medium', 'long']
-            if cat_choice in ['1', '2', '3', '4']:
-                category = categories[int(cat_choice) - 1]
-                days = input("Delete data older than how many days? (default 30): ").strip()
-                days = int(days) if days else 30
-                cleanup_by_category(category, days)
-                
-        elif choice == '3':
             force_retrain_models()
             
-        elif choice == '4':
+        elif choice == '3':
             validate_all_pending()
             
-        elif choice == '5':
+        elif choice == '4':
             print("\nCategories:")
             print("  1. ultra_short")
             print("  2. short")
@@ -624,63 +427,15 @@ def main():
                 category = categories[int(cat_choice) - 1]
                 validate_category(category)
                 
-        elif choice == '6':
+        elif choice == '5':
             reset_statistics()
             
-        elif choice == '7':
-            print("\nCategories:")
-            print("  1. ultra_short")
-            print("  2. short")
-            print("  3. medium")
-            print("  4. long")
-            cat_choice = input("Select category (1-4): ").strip()
-            categories = ['ultra_short', 'short', 'medium', 'long']
-            if cat_choice in ['1', '2', '3', '4']:
-                category = categories[int(cat_choice) - 1]
-                reset_category_statistics(category)
-                
-        elif choice == '8':
+        elif choice == '6':
             days = input("Export last how many days? (default 7): ").strip()
             days = int(days) if days else 7
             export_predictions_csv(days)
             
-        elif choice == '9':
-            print("\nCategories:")
-            print("  1. ultra_short")
-            print("  2. short")
-            print("  3. medium")
-            print("  4. long")
-            cat_choice = input("Select category (1-4): ").strip()
-            categories = ['ultra_short', 'short', 'medium', 'long']
-            if cat_choice in ['1', '2', '3', '4']:
-                category = categories[int(cat_choice) - 1]
-                days = input("Export last how many days? (default 7): ").strip()
-                days = int(days) if days else 7
-                export_predictions_csv(days, category=category)
-                
-        elif choice == '10':
-            print("\nCategories:")
-            print("  1. ultra_short")
-            print("  2. short")
-            print("  3. medium")
-            print("  4. long")
-            cat_choice = input("Select category (1-4): ").strip()
-            categories = ['ultra_short', 'short', 'medium', 'long']
-            if cat_choice in ['1', '2', '3', '4']:
-                category = categories[int(cat_choice) - 1]
-                days = input("Report for last how many days? (default 7): ").strip()
-                days = int(days) if days else 7
-                export_category_report(category, days)
-                
-        elif choice == '11':
-            backup_models()
-            
-        elif choice == '12':
-            backup_dir = input("Enter backup directory name: ").strip()
-            if backup_dir:
-                restore_models(backup_dir)
-                
-        elif choice == '13':
+        elif choice == '7':
             show_disk_usage()
             
         elif choice == '0':
@@ -698,10 +453,6 @@ if __name__ == "__main__":
         if command == 'cleanup':
             days = int(sys.argv[2]) if len(sys.argv) > 2 else 30
             cleanup_old_data(days)
-        elif command == 'cleanup-category':
-            category = sys.argv[2] if len(sys.argv) > 2 else 'short'
-            days = int(sys.argv[3]) if len(sys.argv) > 3 else 30
-            cleanup_by_category(category, days)
         elif command == 'retrain':
             force_retrain_models()
         elif command == 'validate':
@@ -712,13 +463,7 @@ if __name__ == "__main__":
         elif command == 'export':
             days = int(sys.argv[2]) if len(sys.argv) > 2 else 7
             export_predictions_csv(days)
-        elif command == 'export-category':
-            category = sys.argv[2] if len(sys.argv) > 2 else 'short'
-            days = int(sys.argv[3]) if len(sys.argv) > 3 else 7
-            export_predictions_csv(days, category=category)
-        elif command == 'backup':
-            backup_models()
         else:
-            print("Usage: python maintenance.py [cleanup|cleanup-category|retrain|validate|validate-category|export|export-category|backup]")
+            print("Usage: python maintenance.py [cleanup|retrain|validate|validate-category|export]")
     else:
         main()

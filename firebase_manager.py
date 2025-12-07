@@ -1,6 +1,5 @@
 """
-Firebase Manager for Bitcoin Predictor
-Enhanced with auto-reconnect and error handling
+Firebase Manager for Bitcoin Predictor - FIXED VALIDATION
 ALL TIMESTAMPS IN WIB (UTC+7)
 """
 
@@ -44,7 +43,6 @@ class FirebaseManager:
         
         for attempt in range(max_retries):
             try:
-                # Check if already initialized
                 if not firebase_admin._apps:
                     cred = credentials.Certificate(FIREBASE_CONFIG['credentials_path'])
                     firebase_admin.initialize_app(cred, {
@@ -119,8 +117,8 @@ class FirebaseManager:
             target_time_wib = add_minutes_local(now_wib, prediction['timeframe_minutes'])
             
             doc_data = {
-                'timestamp': now_iso_wib(),  # WIB ISO string
-                'prediction_time': prepare_firebase_timestamp(now_wib),  # WIB
+                'timestamp': now_iso_wib(),
+                'prediction_time': prepare_firebase_timestamp(now_wib),
                 'timeframe_minutes': prediction['timeframe_minutes'],
                 'current_price': float(prediction['current_price']),
                 'predicted_price': float(prediction['predicted_price']),
@@ -131,7 +129,7 @@ class FirebaseManager:
                 'trend': prediction['trend'],
                 'confidence': float(prediction['confidence']),
                 'method': prediction['method'],
-                'target_time': prepare_firebase_timestamp(target_time_wib),  # WIB
+                'target_time': prepare_firebase_timestamp(target_time_wib),
                 'validated': False,
                 'validation_result': None,
                 'actual_price': None,
@@ -158,52 +156,6 @@ class FirebaseManager:
             logger.error(f"❌ Failed to save prediction: {error}")
             self._log_error("save_prediction", error)
             return None
-    
-    def save_raw_data(self, df, limit: int = 100):
-        """Save raw Bitcoin data to Firebase - timestamps in WIB"""
-        def _save():
-            collection = self.firestore_db.collection(FIREBASE_COLLECTIONS['raw_data'])
-            recent_data = df.head(limit)
-            
-            batch = self.firestore_db.batch()
-            count = 0
-            
-            for idx, row in recent_data.iterrows():
-                doc_ref = collection.document(f"btc_{row['datetime'].strftime('%Y%m%d_%H%M%S')}")
-                
-                data = {
-                    'timestamp': now_iso_wib(),
-                    'datetime': row['datetime'].isoformat(),
-                    'price': float(row['price']),
-                    'open': float(row['open']),
-                    'high': float(row['high']),
-                    'low': float(row['low']),
-                    'volume': float(row['volume']),
-                }
-                
-                if 'rsi' in row and not pd.isna(row['rsi']):
-                    data['rsi'] = float(row['rsi'])
-                if 'macd' in row and not pd.isna(row['macd']):
-                    data['macd'] = float(row['macd'])
-                
-                batch.set(doc_ref, data, merge=True)
-                count += 1
-                
-                if count % 500 == 0:
-                    batch.commit()
-                    batch = self.firestore_db.batch()
-            
-            if count % 500 != 0:
-                batch.commit()
-            
-            return count
-        
-        result, error = self._execute_with_retry(_save)
-        
-        if result:
-            logger.info(f"✅ Saved {result} raw data points to Firebase")
-        else:
-            logger.warning(f"⚠️ Failed to save raw data: {error}")
     
     def get_unvalidated_predictions(self) -> List[Dict]:
         """Get all predictions that haven't been validated yet"""
@@ -240,34 +192,61 @@ class FirebaseManager:
             return []
     
     def validate_prediction(self, doc_id: str, actual_price: float, 
-                          predicted_price: float, trend: str) -> bool:
-        """Validate a prediction and mark as win/lose"""
+                          predicted_price: float, current_price: float, trend: str) -> bool:
+        """
+        FIXED: Validate a prediction correctly
+        
+        Logic:
+        - CALL (UP) = prediksi harga naik dari current_price
+        - WIN jika actual_price > current_price
+        - PUT (DOWN) = prediksi harga turun dari current_price  
+        - WIN jika actual_price < current_price
+        """
         def _validate():
-            predicted_direction = 'up' if 'CALL' in trend.upper() else 'down'
-            actual_direction = 'up' if actual_price >= predicted_price else 'down'
+            # Tentukan prediksi direction
+            predicted_direction = 'up' if 'CALL' in trend.upper() or 'UP' in trend.upper() else 'down'
             
-            is_win = predicted_direction == actual_direction
+            # FIXED: Bandingkan actual_price dengan CURRENT_PRICE (bukan predicted_price)
+            # Ini adalah harga SAAT PREDIKSI dibuat vs harga ACTUAL
+            if predicted_direction == 'up':
+                # Prediksi NAIK - WIN jika actual > current
+                is_win = actual_price > current_price
+            else:
+                # Prediksi TURUN - WIN jika actual < current
+                is_win = actual_price < current_price
             
+            # Calculate errors
             price_error = abs(actual_price - predicted_price)
             price_error_pct = (price_error / predicted_price) * 100
+            
+            # Calculate actual change
+            actual_change = actual_price - current_price
+            actual_change_pct = (actual_change / current_price) * 100
             
             doc_ref = self.firestore_db.collection(FIREBASE_COLLECTIONS['predictions']).document(doc_id)
             doc_ref.update({
                 'validated': True,
-                'validation_time': now_iso_wib(),  # WIB
+                'validation_time': now_iso_wib(),
                 'actual_price': float(actual_price),
                 'validation_result': 'WIN' if is_win else 'LOSE',
                 'price_error': float(price_error),
                 'price_error_pct': float(price_error_pct),
-                'direction_correct': is_win
+                'direction_correct': is_win,
+                'actual_change': float(actual_change),
+                'actual_change_pct': float(actual_change_pct),
+                'predicted_direction': predicted_direction
             })
             
             validation_data = {
-                'timestamp': now_iso_wib(),  # WIB
+                'timestamp': now_iso_wib(),
                 'prediction_id': doc_id,
                 'result': 'WIN' if is_win else 'LOSE',
+                'current_price': float(current_price),
                 'predicted_price': float(predicted_price),
                 'actual_price': float(actual_price),
+                'predicted_direction': predicted_direction,
+                'actual_change': float(actual_change),
+                'actual_change_pct': float(actual_change_pct),
                 'error': float(price_error),
                 'error_pct': float(price_error_pct)
             }
@@ -280,7 +259,10 @@ class FirebaseManager:
         
         if result is not None:
             result_emoji = "✅" if result else "❌"
-            logger.info(f"{result_emoji} Validation: {doc_id} - {'WIN' if result else 'LOSE'}")
+            direction = "UP" if 'CALL' in trend.upper() or 'UP' in trend.upper() else "DOWN"
+            logger.info(f"{result_emoji} {doc_id[:8]}: Predicted {direction} | "
+                       f"Current: ${current_price:.0f} → Actual: ${actual_price:.0f} | "
+                       f"{'WIN' if result else 'LOSE'}")
             return True
         else:
             logger.error(f"❌ Failed to validate prediction: {error}")
@@ -339,7 +321,7 @@ class FirebaseManager:
                 'win_rate': round(win_rate, 2),
                 'avg_error': round(avg_error, 2),
                 'avg_error_pct': round(avg_error_pct, 2),
-                'last_updated': now_iso_wib()  # WIB
+                'last_updated': now_iso_wib()
             }
         
         result, error = self._execute_with_retry(_get_stats)
@@ -373,7 +355,7 @@ class FirebaseManager:
         def _save():
             collection = self.firestore_db.collection(FIREBASE_COLLECTIONS['model_performance'])
             doc_data = {
-                'timestamp': now_iso_wib(),  # WIB
+                'timestamp': now_iso_wib(),
                 'metrics': metrics
             }
             collection.add(doc_data)
@@ -393,7 +375,7 @@ class FirebaseManager:
         def _save():
             collection = self.firestore_db.collection(FIREBASE_COLLECTIONS['system_health'])
             doc_data = {
-                'timestamp': now_iso_wib(),  # WIB
+                'timestamp': now_iso_wib(),
                 **health_data
             }
             collection.add(doc_data)
@@ -407,7 +389,7 @@ class FirebaseManager:
         try:
             collection = self.firestore_db.collection(FIREBASE_COLLECTIONS['error_logs'])
             error_data = {
-                'timestamp': now_iso_wib(),  # WIB
+                'timestamp': now_iso_wib(),
                 'operation': operation,
                 'error_type': type(error).__name__,
                 'error_message': str(error),

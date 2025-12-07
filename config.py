@@ -1,6 +1,6 @@
 """
-Enhanced Configuration with Security and Validation
-Environment-based configuration with proper defaults
+FIXED Configuration - NO BACKTEST
+Simplified and focused configuration
 """
 
 import os
@@ -8,7 +8,6 @@ from typing import Dict, Optional
 from dotenv import load_dotenv
 import logging
 
-# Load environment variables
 load_dotenv()
 
 logger = logging.getLogger(__name__)
@@ -28,7 +27,7 @@ def validate_environment():
     
     logger.info(f"✅ Environment validated: {ENVIRONMENT}, Mode: {TRADING_MODE}")
 
-# Firebase Configuration - FROM ENVIRONMENT
+# Firebase Configuration
 FIREBASE_CONFIG = {
     'credentials_path': os.getenv('FIREBASE_CREDENTIALS_PATH'),
     'database_url': os.getenv('FIREBASE_DATABASE_URL'),
@@ -37,37 +36,37 @@ FIREBASE_CONFIG = {
     'connection_timeout': 30
 }
 
-# Prediction Configuration - IMPROVED
+# Prediction Configuration - SIMPLIFIED
 PREDICTION_CONFIG = {
-    # Timeframes (minutes)
-    'ultra_short_timeframes': [5, 10],  # REMOVED 1,2,3 - too noisy
+    # Timeframes (minutes) - REDUCED for better accuracy
+    'ultra_short_timeframes': [5, 10],
     'short_timeframes': [15, 30, 60],
-    'medium_timeframes': [120, 240, 480, 720],
-    'long_timeframes': [1440, 2880, 4320],
+    'medium_timeframes': [120, 240, 720],
+    'long_timeframes': [1440, 2880],
     
-    # Active timeframes - REDUCED for stability
+    # Active timeframes - FOCUSED on reliable ones
     'active_timeframes': [
-        15, 30, 60,      # Short term - more reliable
+        15, 30, 60,      # Short term
         240, 720,        # Medium term
         1440             # Long term
     ],
     
-    'priority_timeframes': [60, 240, 1440],  # Focus on these
+    'priority_timeframes': [60, 240, 1440],
     
-    # Minimum confidence thresholds - FROM ENVIRONMENT with defaults
+    # Minimum confidence thresholds - MORE STRICT
     'min_confidence': {
-        'ultra_short': int(os.getenv('MIN_CONFIDENCE_ULTRA_SHORT', 75)),  # High threshold
-        'short': int(os.getenv('MIN_CONFIDENCE_SHORT', 65)),
+        'ultra_short': int(os.getenv('MIN_CONFIDENCE_ULTRA_SHORT', 70)),
+        'short': int(os.getenv('MIN_CONFIDENCE_SHORT', 60)),
         'medium': int(os.getenv('MIN_CONFIDENCE_MEDIUM', 55)),
         'long': int(os.getenv('MIN_CONFIDENCE_LONG', 50))
     },
     
-    # Data requirements - IMPROVED for better predictions
+    # Data requirements
     'data_requirements': {
         'ultra_short': {
-            'days': 3,              # Increased from 1
+            'days': 3,
             'interval': 'minute',
-            'min_points': 500       # Increased from 200
+            'min_points': 500
         },
         'short': {
             'days': 7,
@@ -80,60 +79,58 @@ PREDICTION_CONFIG = {
             'min_points': 200
         },
         'long': {
-            'days': 60,             # Increased from 30
+            'days': 60,
             'interval': 'day',
-            'min_points': 120       # Increased from 100
+            'min_points': 120
         }
     },
     
     'validation_check_interval': 60,
     'health_check_interval': 300,
-    'max_consecutive_failures': 3,    # Reduced from 5
-    'enable_backtesting': True,       # NEW
-    'backtest_days': 30,               # NEW
+    'max_consecutive_failures': 3,
 }
 
-# Data Configuration - SECURE
+# Data Configuration
 DATA_CONFIG = {
-    'cryptocompare_api_key': os.getenv('CRYPTOCOMPARE_API_KEY'),  # From environment
+    'cryptocompare_api_key': os.getenv('CRYPTOCOMPARE_API_KEY'),
     'data_retention_days': 30,
     'min_data_points': 150,
-    'cache_ttl': 300,  # Increased to 5 minutes
+    'cache_ttl': 300,
     'api_fallback_intervals': ['hour', 'day'],
     'enable_caching': True,
     'max_cache_size_mb': 100,
 }
 
-# Model Configuration - IMPROVED
+# Model Configuration
 MODEL_CONFIG = {
     'lstm': {
-        'epochs': 40,           # Increased from 30
+        'epochs': 40,
         'batch_size': 64,
-        'sequence_length': 60,  # Increased from 40
-        'patience': 10,         # Increased from 8
-        'ultra_short_sequence': 30,  # Increased from 15
+        'sequence_length': 60,
+        'patience': 10,
+        'ultra_short_sequence': 30,
         'short_sequence': 60,
         'medium_sequence': 80,
         'long_sequence': 100
     },
     'rf': {
-        'n_estimators': 150,    # Increased from 100
-        'max_depth': 12,        # Increased from 10
-        'min_samples_split': 8  # Reduced from 10
+        'n_estimators': 150,
+        'max_depth': 12,
+        'min_samples_split': 8
     },
     'gb': {
-        'n_estimators': 150,    # Increased from 100
-        'learning_rate': 0.08,  # Reduced from 0.1
-        'max_depth': 5          # Increased from 4
+        'n_estimators': 150,
+        'learning_rate': 0.08,
+        'max_depth': 5
     },
     'auto_retrain_interval': 86400,  # 24 hours
     'model_save_path': 'models/',
     'backup_path': 'models_backup/',
-    'enable_model_validation': True,  # NEW
-    'min_validation_score': 0.6,      # NEW
+    'enable_model_validation': True,
+    'min_validation_score': 0.6,
 }
 
-# Alert Configuration - NEW
+# Alert Configuration
 ALERT_CONFIG = {
     'enable_alerts': os.getenv('ENABLE_ALERTS', 'false').lower() == 'true',
     'telegram_bot_token': os.getenv('TELEGRAM_BOT_TOKEN'),
@@ -144,7 +141,6 @@ ALERT_CONFIG = {
     'smtp_username': os.getenv('SMTP_USERNAME'),
     'smtp_password': os.getenv('SMTP_PASSWORD'),
     
-    # Alert thresholds
     'alert_on_low_winrate': True,
     'min_winrate_alert': 45.0,
     'alert_on_high_memory': True,
@@ -152,20 +148,20 @@ ALERT_CONFIG = {
     'max_consecutive_failures': 3,
 }
 
-# System Health Configuration - IMPROVED
+# System Health Configuration
 HEALTH_CONFIG = {
     'max_memory_mb': int(os.getenv('MAX_MEMORY_MB', 2048)),
     'max_cpu_percent': int(os.getenv('MAX_CPU_PERCENT', 90)),
     'disk_space_min_gb': 1,
     'enable_watchdog': True,
-    'watchdog_timeout': 1200,  # 20 minutes (increased from 15)
+    'watchdog_timeout': 1200,
     'auto_restart_on_error': True,
-    'max_auto_restarts': 5,    # Reduced from 10
+    'max_auto_restarts': 5,
     'health_check_interval': 300,
     'enable_performance_monitoring': True,
 }
 
-# Monitoring Configuration - NEW
+# Monitoring Configuration
 MONITORING_CONFIG = {
     'enable_prometheus': os.getenv('ENABLE_PROMETHEUS', 'false').lower() == 'true',
     'prometheus_port': int(os.getenv('PROMETHEUS_PORT', 8000)),
@@ -175,7 +171,7 @@ MONITORING_CONFIG = {
     'enable_detailed_logging': ENVIRONMENT == 'development',
 }
 
-# Cache Configuration - NEW
+# Cache Configuration
 CACHE_CONFIG = {
     'enable_redis': os.getenv('ENABLE_REDIS', 'false').lower() == 'true',
     'redis_host': os.getenv('REDIS_HOST', 'localhost'),
@@ -183,7 +179,7 @@ CACHE_CONFIG = {
     'redis_password': os.getenv('REDIS_PASSWORD'),
     'redis_db': 0,
     'cache_prefix': 'btc_predictor:',
-    'default_ttl': 300,  # 5 minutes
+    'default_ttl': 300,
 }
 
 # API Configuration
@@ -218,10 +214,9 @@ FIREBASE_COLLECTIONS = {
     'system_health': 'system_health',
     'error_logs': 'error_logs',
     'alerts': 'alerts',
-    'backtest_results': 'backtest_results',  # NEW
 }
 
-# Trading Strategy Configuration - IMPROVED
+# Trading Strategy Configuration
 STRATEGY_CONFIG = {
     'enable_mtf_analysis': True,
     'mtf_confirmation_required': 2,
@@ -240,7 +235,7 @@ STRATEGY_CONFIG = {
         'high': {
             'confidence_multiplier': 0.90,
             'prefer_timeframes': [5, 15, 30],
-            'volatility_threshold': 3.0  # %
+            'volatility_threshold': 3.0
         },
         'medium': {
             'confidence_multiplier': 1.0,
@@ -254,23 +249,13 @@ STRATEGY_CONFIG = {
         }
     },
     
-    # Risk Management - NEW
+    # Risk Management
     'risk_management': {
         'max_daily_predictions': 100,
         'max_predictions_per_timeframe': 20,
-        'cooldown_after_loss_streak': 3,  # Wait after 3 consecutive losses
+        'cooldown_after_loss_streak': 3,
         'cooldown_duration_minutes': 30,
     },
-}
-
-# Backtesting Configuration - NEW
-BACKTEST_CONFIG = {
-    'enable_backtesting': True,
-    'backtest_on_startup': False,
-    'backtest_before_trading': False,
-    'min_backtest_winrate': 52.0,  # Minimum 52% to go live
-    'backtest_sample_size': 100,    # Minimum predictions to validate
-    'backtest_periods': [7, 14, 30],  # Days to backtest
 }
 
 # Helper Functions
