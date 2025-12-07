@@ -1,6 +1,7 @@
 """
 Improved Bitcoin Price Predictor with Validation
 Better ML approach with proper validation and confidence calculation
+COMPLETE VERSION with Data Fetching Functions
 """
 
 import numpy as np
@@ -10,8 +11,10 @@ from datetime import datetime
 from typing import Dict, Optional
 import pickle
 import os
+import requests
+import time
 
-from config import MODEL_CONFIG, get_timeframe_category, get_min_confidence
+from config import MODEL_CONFIG, DATA_CONFIG, get_timeframe_category, get_min_confidence
 from sklearn.model_selection import TimeSeriesSplit
 from sklearn.metrics import accuracy_score, mean_squared_error, mean_absolute_error
 
@@ -33,6 +36,271 @@ except ImportError as e:
     logger.error(f"❌ ML libraries not available: {e}")
 
 
+# ============================================================================
+# DATA FETCHING FUNCTIONS
+# ============================================================================
+
+def get_current_btc_price() -> Optional[float]:
+    """
+    Get current Bitcoin price from CryptoCompare
+    
+    Returns:
+        float: Current BTC price in USD, or None if failed
+    """
+    api_key = DATA_CONFIG.get('cryptocompare_api_key')
+    
+    if not api_key:
+        logger.error("❌ CryptoCompare API key not configured")
+        return None
+    
+    url = "https://min-api.cryptocompare.com/data/price"
+    params = {
+        'fsym': 'BTC',
+        'tsyms': 'USD',
+        'api_key': api_key
+    }
+    
+    max_retries = 3
+    
+    for attempt in range(max_retries):
+        try:
+            response = requests.get(url, params=params, timeout=10)
+            response.raise_for_status()
+            
+            data = response.json()
+            
+            if 'USD' in data:
+                price = float(data['USD'])
+                logger.debug(f"💰 Current BTC price: ${price:,.2f}")
+                return price
+            else:
+                logger.warning(f"⚠️ Unexpected API response: {data}")
+                return None
+                
+        except requests.exceptions.RequestException as e:
+            logger.warning(f"⚠️ API request failed (attempt {attempt + 1}/{max_retries}): {e}")
+            if attempt < max_retries - 1:
+                time.sleep(2 ** attempt)
+            else:
+                logger.error(f"❌ Failed to get current price after {max_retries} attempts")
+                return None
+        except Exception as e:
+            logger.error(f"❌ Error getting current price: {e}")
+            return None
+    
+    return None
+
+
+def get_bitcoin_data_realtime(days: int = 7, interval: str = 'hour') -> Optional[pd.DataFrame]:
+    """
+    Fetch historical Bitcoin data from CryptoCompare
+    
+    Args:
+        days: Number of days of historical data
+        interval: Data interval - 'minute', 'hour', or 'day'
+    
+    Returns:
+        DataFrame with columns: datetime, price, open, high, low, volume
+    """
+    api_key = DATA_CONFIG.get('cryptocompare_api_key')
+    
+    if not api_key:
+        logger.error("❌ CryptoCompare API key not configured")
+        return None
+    
+    # Determine API endpoint and limit
+    if interval == 'minute':
+        endpoint = 'histominute'
+        limit = min(days * 1440, 2000)  # Max 2000 points
+    elif interval == 'hour':
+        endpoint = 'histohour'
+        limit = min(days * 24, 2000)
+    elif interval == 'day':
+        endpoint = 'histoday'
+        limit = days
+    else:
+        logger.error(f"❌ Invalid interval: {interval}")
+        return None
+    
+    url = f"https://min-api.cryptocompare.com/data/v2/{endpoint}"
+    params = {
+        'fsym': 'BTC',
+        'tsym': 'USD',
+        'limit': limit,
+        'api_key': api_key
+    }
+    
+    max_retries = 3
+    
+    for attempt in range(max_retries):
+        try:
+            logger.info(f"📡 Fetching {limit} {interval}ly data points...")
+            
+            response = requests.get(url, params=params, timeout=30)
+            response.raise_for_status()
+            
+            data = response.json()
+            
+            if data.get('Response') == 'Error':
+                logger.error(f"❌ API Error: {data.get('Message')}")
+                return None
+            
+            if 'Data' not in data or 'Data' not in data['Data']:
+                logger.error(f"❌ Unexpected API response structure")
+                return None
+            
+            # Parse data
+            candles = data['Data']['Data']
+            
+            if not candles:
+                logger.error("❌ No data returned from API")
+                return None
+            
+            # Create DataFrame
+            df = pd.DataFrame(candles)
+            
+            # Convert timestamp to datetime
+            df['datetime'] = pd.to_datetime(df['time'], unit='s')
+            
+            # Rename columns
+            df = df.rename(columns={
+                'close': 'price',
+                'volumefrom': 'volume'
+            })
+            
+            # Select and order columns
+            df = df[['datetime', 'price', 'open', 'high', 'low', 'volume']]
+            
+            # Sort by datetime (most recent first)
+            df = df.sort_values('datetime', ascending=False).reset_index(drop=True)
+            
+            # Remove any rows with zero/null prices
+            df = df[df['price'] > 0].dropna(subset=['price'])
+            
+            logger.info(f"✅ Fetched {len(df)} data points")
+            logger.info(f"   Date range: {df.iloc[-1]['datetime']} to {df.iloc[0]['datetime']}")
+            logger.info(f"   Latest price: ${df.iloc[0]['price']:,.2f}")
+            
+            return df
+            
+        except requests.exceptions.RequestException as e:
+            logger.warning(f"⚠️ API request failed (attempt {attempt + 1}/{max_retries}): {e}")
+            if attempt < max_retries - 1:
+                time.sleep(2 ** attempt)
+            else:
+                logger.error(f"❌ Failed to fetch data after {max_retries} attempts")
+                return None
+        except Exception as e:
+            logger.error(f"❌ Error fetching data: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+    
+    return None
+
+
+def add_technical_indicators(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Add technical indicators to the dataframe
+    
+    Args:
+        df: DataFrame with OHLCV data
+    
+    Returns:
+        DataFrame with added technical indicators
+    """
+    try:
+        df = df.copy()
+        
+        # Ensure data is sorted chronologically (oldest first) for calculations
+        df = df.sort_values('datetime', ascending=True).reset_index(drop=True)
+        
+        # Price-based indicators
+        df['sma_20'] = df['price'].rolling(window=20).mean()
+        df['sma_50'] = df['price'].rolling(window=50).mean()
+        df['ema_9'] = df['price'].ewm(span=9, adjust=False).mean()
+        df['ema_21'] = df['price'].ewm(span=21, adjust=False).mean()
+        df['ema_50'] = df['price'].ewm(span=50, adjust=False).mean()
+        
+        # RSI
+        delta = df['price'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+        rs = gain / loss
+        df['rsi'] = 100 - (100 / (1 + rs))
+        
+        # MACD
+        ema_12 = df['price'].ewm(span=12, adjust=False).mean()
+        ema_26 = df['price'].ewm(span=26, adjust=False).mean()
+        df['macd'] = ema_12 - ema_26
+        df['macd_signal'] = df['macd'].ewm(span=9, adjust=False).mean()
+        df['macd_hist'] = df['macd'] - df['macd_signal']
+        
+        # Bollinger Bands
+        df['bb_middle'] = df['price'].rolling(window=20).mean()
+        bb_std = df['price'].rolling(window=20).std()
+        df['bb_upper'] = df['bb_middle'] + (bb_std * 2)
+        df['bb_lower'] = df['bb_middle'] - (bb_std * 2)
+        df['bb_position'] = (df['price'] - df['bb_lower']) / (df['bb_upper'] - df['bb_lower'])
+        
+        # Stochastic Oscillator
+        low_14 = df['low'].rolling(window=14).min()
+        high_14 = df['high'].rolling(window=14).max()
+        df['stoch_k'] = 100 * ((df['price'] - low_14) / (high_14 - low_14))
+        df['stoch_d'] = df['stoch_k'].rolling(window=3).mean()
+        
+        # ATR (Average True Range)
+        high_low = df['high'] - df['low']
+        high_close = np.abs(df['high'] - df['price'].shift())
+        low_close = np.abs(df['low'] - df['price'].shift())
+        ranges = pd.concat([high_low, high_close, low_close], axis=1)
+        true_range = ranges.max(axis=1)
+        df['atr'] = true_range.rolling(window=14).mean()
+        
+        # Volume indicators
+        df['volume_sma'] = df['volume'].rolling(window=20).mean()
+        df['volume_ratio'] = df['volume'] / df['volume_sma']
+        
+        # Momentum
+        df['momentum'] = df['price'] - df['price'].shift(10)
+        
+        # Price change indicators
+        df['price_change_1'] = df['price'].pct_change(1)
+        df['price_change_3'] = df['price'].pct_change(3)
+        df['price_change_5'] = df['price'].pct_change(5)
+        
+        # Volume lags
+        df['volume_lag_1'] = df['volume'].shift(1)
+        df['volume_lag_3'] = df['volume'].shift(3)
+        df['volume_lag_5'] = df['volume'].shift(5)
+        
+        # Rolling statistics
+        for window in [5, 20]:
+            df[f'price_rolling_mean_{window}'] = df['price'].rolling(window=window).mean()
+            df[f'price_rolling_std_{window}'] = df['price'].rolling(window=window).std()
+            df[f'volume_rolling_mean_{window}'] = df['volume'].rolling(window=window).mean()
+        
+        # Binary indicators
+        df['price_above_sma20'] = (df['price'] > df['sma_20']).astype(int)
+        df['price_above_sma50'] = (df['price'] > df['sma_50']).astype(int)
+        df['ema_trend'] = (df['ema_9'] > df['ema_21']).astype(int)
+        
+        # Sort back to most recent first
+        df = df.sort_values('datetime', ascending=False).reset_index(drop=True)
+        
+        logger.debug(f"✅ Added {len(df.columns) - 6} technical indicators")
+        
+        return df
+        
+    except Exception as e:
+        logger.error(f"❌ Error adding technical indicators: {e}")
+        return df
+
+
+# ============================================================================
+# ML PREDICTOR CLASS
+# ============================================================================
+
 class ImprovedBitcoinPredictor:
     """Improved ML predictor with validation"""
     
@@ -48,6 +316,7 @@ class ImprovedBitcoinPredictor:
         self.metrics = {}
         self.validation_scores = {}
         self.last_training = None
+        self.recent_accuracy = None  # Track recent performance
         
         logger.info("🤖 Improved predictor initialized")
     
@@ -73,7 +342,7 @@ class ImprovedBitcoinPredictor:
         
         # Lag features - reduced to avoid data leakage
         lag_features = []
-        for lag in [1, 3, 5]:  # Reduced from [1,3,5,10]
+        for lag in [1, 3, 5]:
             lag_features.extend([
                 f'price_change_{lag}',
                 f'volume_lag_{lag}'
@@ -81,7 +350,7 @@ class ImprovedBitcoinPredictor:
         
         # Rolling features - most relevant windows
         rolling_features = []
-        for window in [5, 20]:  # Reduced from [5,10,20,50]
+        for window in [5, 20]:
             rolling_features.extend([
                 f'price_rolling_mean_{window}',
                 f'price_rolling_std_{window}',
@@ -177,7 +446,7 @@ class ImprovedBitcoinPredictor:
             df_clean = df.dropna().copy()
             df_clean = df_clean.sort_values('datetime', ascending=True).reset_index(drop=True)
             
-            if len(df_clean) < 500:  # Increased minimum
+            if len(df_clean) < 500:
                 logger.error(f"❌ Insufficient data: {len(df_clean)} (need 500+)")
                 return False
             
@@ -193,11 +462,6 @@ class ImprovedBitcoinPredictor:
             
             # Time series split for proper validation
             tscv = TimeSeriesSplit(n_splits=3)
-            
-            # Store validation scores
-            lstm_scores = []
-            rf_scores = []
-            gb_scores = []
             
             logger.info(f"📊 Using TimeSeriesSplit with 3 folds")
             
@@ -295,7 +559,7 @@ class ImprovedBitcoinPredictor:
                 min_samples_split=MODEL_CONFIG['rf']['min_samples_split'],
                 random_state=42,
                 n_jobs=-1,
-                class_weight='balanced',  # Handle imbalanced data
+                class_weight='balanced',
                 verbose=0
             )
             
@@ -304,7 +568,6 @@ class ImprovedBitcoinPredictor:
             # Evaluate RF
             rf_pred = self.rf_model.predict(X_test_rf)
             rf_accuracy = accuracy_score(y_test_rf, rf_pred)
-            rf_proba = self.rf_model.predict_proba(X_test_rf)
             
             self.metrics['rf'] = {
                 'accuracy': float(rf_accuracy),
@@ -380,7 +643,7 @@ class ImprovedBitcoinPredictor:
         
         # Check LSTM
         if 'lstm' in self.metrics:
-            lstm_valid = self.metrics['lstm']['mape'] < 5.0  # MAPE < 5%
+            lstm_valid = self.metrics['lstm']['mape'] < 5.0
             logger.info(f"{'✅' if lstm_valid else '⚠️'} LSTM validation: MAPE {self.metrics['lstm']['mape']:.2f}%")
         
         # Check RF
@@ -390,7 +653,7 @@ class ImprovedBitcoinPredictor:
         
         # Check GB
         if 'gb' in self.metrics:
-            gb_valid = self.metrics['gb']['mae'] < 1000  # MAE < $1000
+            gb_valid = self.metrics['gb']['mae'] < 1000
             logger.info(f"{'✅' if gb_valid else '⚠️'} GB validation: MAE ${self.metrics['gb']['mae']:.2f}")
     
     def predict(self, df: pd.DataFrame, timeframe_minutes: int) -> Optional[Dict]:
@@ -454,11 +717,11 @@ class ImprovedBitcoinPredictor:
             ensemble_change = (
                 weights['lstm'] * lstm_change +
                 weights['gb'] * gb_change
-            ) * (1 + (rf_confidence - 50) / 200)  # Reduced RF impact
+            ) * (1 + (rf_confidence - 50) / 200)
             
             predicted_price = current_price + ensemble_change
             
-            # Calculate confidence (improved method)
+            # Calculate confidence
             confidence = self._calculate_confidence(
                 lstm_change, gb_change, rf_direction, rf_confidence,
                 category, df_clean
@@ -511,7 +774,7 @@ class ImprovedBitcoinPredictor:
     def _calculate_time_factor(self, timeframe_minutes: int, category: str) -> float:
         """Calculate time adjustment factor"""
         if category == 'ultra_short':
-            return min(timeframe_minutes / 45, 0.8)  # More conservative
+            return min(timeframe_minutes / 45, 0.8)
         elif category == 'short':
             return min(timeframe_minutes / 60, 1.2)
         elif category == 'medium':
@@ -532,7 +795,7 @@ class ImprovedBitcoinPredictor:
     def _calculate_confidence(self, lstm_change: float, gb_change: float,
                              rf_direction: int, rf_confidence: float,
                              category: str, df: pd.DataFrame) -> float:
-        """Calculate prediction confidence (improved method)"""
+        """Calculate prediction confidence"""
         
         # Base confidence from category
         base_confidence = {
@@ -554,7 +817,7 @@ class ImprovedBitcoinPredictor:
         else:
             agreement_score = 0  # Disagree
         
-        # RF confidence contribution (reduced weight)
+        # RF confidence contribution
         rf_contribution = (rf_confidence - 50) * 0.2
         
         # Recent performance (if available)
@@ -595,7 +858,7 @@ class ImprovedBitcoinPredictor:
                 return 5
             elif trend_strength > 1 and volatility < 3:
                 return 3
-            elif volatility > 5:  # High volatility = lower confidence
+            elif volatility > 5:
                 return -5
             
             return 0
@@ -690,3 +953,11 @@ class ImprovedBitcoinPredictor:
         
         time_since_training = (datetime.now() - self.last_training).total_seconds()
         return time_since_training > MODEL_CONFIG['auto_retrain_interval']
+
+
+# ============================================================================
+# COMPATIBILITY ALIAS
+# ============================================================================
+
+# Alias untuk backward compatibility dengan kode lama
+BitcoinMLPredictor = ImprovedBitcoinPredictor
