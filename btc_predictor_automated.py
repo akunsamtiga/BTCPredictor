@@ -431,9 +431,17 @@ class ImprovedBitcoinPredictor:
         
         return model
     
+    # ============================================================================
+    # PERBAIKAN UNTUK train_models() METHOD
+    # Ganti method train_models di ImprovedBitcoinPredictor class
+    # ============================================================================
+
     def train_models(self, df: pd.DataFrame, epochs: int = 50, 
                     batch_size: int = 64) -> bool:
-        """Train models with proper validation"""
+        """
+        FIXED: Train models with proper validation
+        Fixed index out of bounds error for RF and GB training
+        """
         
         if not ML_AVAILABLE:
             logger.error("❌ ML libraries not available")
@@ -460,16 +468,18 @@ class ImprovedBitcoinPredictor:
                 target.reshape(-1, 1)
             ).flatten()
             
-            # Time series split for proper validation
+            # Time series split
             tscv = TimeSeriesSplit(n_splits=3)
             
             logger.info(f"📊 Using TimeSeriesSplit with 3 folds")
             
-            # Train on last fold (most recent data)
+            # Train on last fold
             splits = list(tscv.split(scaled_features))
             train_idx, test_idx = splits[-1]
             
-            # LSTM Training
+            # ====================================================================
+            # LSTM TRAINING
+            # ====================================================================
             logger.info("\n🔵 Training LSTM...")
             X_lstm, y_lstm = self.create_sequences(
                 scaled_features, 
@@ -477,10 +487,14 @@ class ImprovedBitcoinPredictor:
                 self.sequence_length
             )
             
-            X_train_lstm = X_lstm[train_idx[:-self.sequence_length]]
-            X_test_lstm = X_lstm[test_idx[:-self.sequence_length]]
-            y_train_lstm = y_lstm[train_idx[:-self.sequence_length]]
-            y_test_lstm = y_lstm[test_idx[:-self.sequence_length]]
+            # Adjust indices for LSTM sequences
+            train_idx_lstm = train_idx[train_idx < len(X_lstm)]
+            test_idx_lstm = test_idx[test_idx < len(X_lstm)]
+            
+            X_train_lstm = X_lstm[train_idx_lstm]
+            X_test_lstm = X_lstm[test_idx_lstm]
+            y_train_lstm = y_lstm[train_idx_lstm]
+            y_test_lstm = y_lstm[test_idx_lstm]
             
             self.lstm_model = self.build_improved_lstm(
                 (self.sequence_length, len(self.feature_columns))
@@ -540,18 +554,34 @@ class ImprovedBitcoinPredictor:
             
             logger.info(f"✅ LSTM - MAE: ${lstm_mae:,.2f}, RMSE: ${lstm_rmse:,.2f}, MAPE: {lstm_mape:.2f}%")
             
-            # Random Forest Training
+            # ====================================================================
+            # RANDOM FOREST TRAINING - FIXED INDEX ERROR
+            # ====================================================================
             logger.info("\n🌲 Training Random Forest...")
             
-            # Classification target (direction)
-            y_class = (df_clean['price'].shift(-1) > df_clean['price']).astype(int)
-            y_class = y_class[:-1]
-            features_rf = scaled_features[:-1]
+            # CRITICAL FIX: Create classification target FIRST
+            # Then create NEW split for this reduced dataset
+            y_direction = (df_clean['price'].shift(-1) > df_clean['price']).astype(int)
             
-            X_train_rf = features_rf[train_idx]
-            X_test_rf = features_rf[test_idx]
-            y_train_rf = y_class[train_idx]
-            y_test_rf = y_class[test_idx]
+            # Remove last row (NaN from shift(-1))
+            features_rf = scaled_features[:-1]
+            y_class = y_direction[:-1].values
+            
+            logger.info(f"   RF dataset size: {len(features_rf)} samples")
+            
+            # CRITICAL: Create NEW TimeSeriesSplit for RF data
+            # Because we removed one row, old indices won't work!
+            tscv_rf = TimeSeriesSplit(n_splits=3)
+            splits_rf = list(tscv_rf.split(features_rf))
+            train_idx_rf, test_idx_rf = splits_rf[-1]
+            
+            # Now indices will be correct
+            X_train_rf = features_rf[train_idx_rf]
+            X_test_rf = features_rf[test_idx_rf]
+            y_train_rf = y_class[train_idx_rf]
+            y_test_rf = y_class[test_idx_rf]
+            
+            logger.info(f"   Train: {len(X_train_rf)}, Test: {len(X_test_rf)}")
             
             self.rf_model = RandomForestClassifier(
                 n_estimators=MODEL_CONFIG['rf']['n_estimators'],
@@ -576,13 +606,20 @@ class ImprovedBitcoinPredictor:
             
             logger.info(f"✅ RF - Accuracy: {rf_accuracy:.4f}")
             
-            # Gradient Boosting Training
+            # ====================================================================
+            # GRADIENT BOOSTING TRAINING - FIXED INDEX ERROR
+            # ====================================================================
             logger.info("\n🚀 Training Gradient Boosting...")
             
-            X_train_gb = features_rf[train_idx]
-            X_test_gb = features_rf[test_idx]
-            y_train_gb = scaled_target[:-1][train_idx]
-            y_test_gb = scaled_target[:-1][test_idx]
+            # Use same split as RF (already correctly sized)
+            y_gb = scaled_target[:-1]  # Match features_rf length
+            
+            X_train_gb = features_rf[train_idx_rf]
+            X_test_gb = features_rf[test_idx_rf]
+            y_train_gb = y_gb[train_idx_rf]
+            y_test_gb = y_gb[test_idx_rf]
+            
+            logger.info(f"   Train: {len(X_train_gb)}, Test: {len(X_test_gb)}")
             
             self.gb_model = GradientBoostingRegressor(
                 n_estimators=MODEL_CONFIG['gb']['n_estimators'],
