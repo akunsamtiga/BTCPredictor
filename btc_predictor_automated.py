@@ -408,7 +408,6 @@ def add_technical_indicators(df: pd.DataFrame) -> pd.DataFrame:
         df['price_above_sma50'] = (df['price'] > df['sma_50']).astype(int)
         df['ema_trend'] = (df['ema_9'] > df['ema_21']).astype(int)
         
-        # Sort back to most recent first
         df = df.sort_values('datetime', ascending=False).reset_index(drop=True)
         
         logger.debug(f"✅ Added {len(df.columns) - 6} technical indicators")
