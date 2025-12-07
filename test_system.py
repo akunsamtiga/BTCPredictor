@@ -171,7 +171,7 @@ def test_ml_models():
     print_header("🧪 TEST 5: ML Models")
     
     try:
-        from btc_predictor_improved import ImprovedBitcoinPredictor
+        from btc_predictor_automated import ImprovedBitcoinPredictor
         from btc_predictor_automated import get_bitcoin_data_realtime, add_technical_indicators
         
         print("\n🤖 Creating predictor...")
