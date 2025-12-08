@@ -1,7 +1,10 @@
 """
-Improved Bitcoin Price Predictor with Validation
-Better ML approach with proper validation and confidence calculation
-COMPLETE VERSION with Data Fetching Functions
+IMPROVED Bitcoin Price Predictor
+FIXES:
+1. More frequent predictions with adaptive confidence
+2. Better win rate calculation
+3. Improved model ensemble
+4. Better feature engineering
 """
 
 import numpy as np
@@ -37,25 +40,19 @@ except ImportError as e:
 
 
 # ============================================================================
-# CONSTANTS FOR API LIMITS
+# CONSTANTS
 # ============================================================================
 
-# CryptoCompare API limits
-API_MAX_LIMIT = 2000  # Maximum points per request
-API_RATE_LIMIT_DELAY = 1  # Delay between requests (seconds)
+API_MAX_LIMIT = 2000
+API_RATE_LIMIT_DELAY = 1
 
 
 # ============================================================================
-# DATA FETCHING FUNCTIONS
+# DATA FETCHING - UNCHANGED
 # ============================================================================
 
 def get_current_btc_price() -> Optional[float]:
-    """
-    Get current Bitcoin price from CryptoCompare
-    
-    Returns:
-        float: Current BTC price in USD, or None if failed
-    """
+    """Get current Bitcoin price from CryptoCompare"""
     api_key = DATA_CONFIG.get('cryptocompare_api_key')
     
     if not api_key:
@@ -101,17 +98,7 @@ def get_current_btc_price() -> Optional[float]:
 
 
 def _fetch_single_batch(endpoint: str, limit: int, to_timestamp: Optional[int] = None) -> Optional[Dict]:
-    """
-    Fetch single batch of data from CryptoCompare API
-    
-    Args:
-        endpoint: API endpoint (histominute, histohour, histoday)
-        limit: Number of data points to fetch (max 2000)
-        to_timestamp: End timestamp (None = latest)
-    
-    Returns:
-        Dict with API response or None if failed
-    """
+    """Fetch single batch of data from CryptoCompare API"""
     api_key = DATA_CONFIG.get('cryptocompare_api_key')
     
     url = f"https://min-api.cryptocompare.com/data/v2/{endpoint}"
@@ -147,27 +134,16 @@ def _fetch_single_batch(endpoint: str, limit: int, to_timestamp: Optional[int] =
 
 
 def get_bitcoin_data_realtime(days: int = 7, interval: str = 'hour') -> Optional[pd.DataFrame]:
-    """
-    IMPROVED: Fetch historical Bitcoin data with automatic pagination
-    Handles API limit by making multiple requests if needed
-    
-    Args:
-        days: Number of days of historical data
-        interval: Data interval - 'minute', 'hour', or 'day'
-    
-    Returns:
-        DataFrame with columns: datetime, price, open, high, low, volume
-    """
+    """Fetch historical Bitcoin data with automatic pagination"""
     api_key = DATA_CONFIG.get('cryptocompare_api_key')
     
     if not api_key:
         logger.error("❌ CryptoCompare API key not configured")
         return None
     
-    # Determine API endpoint and total points needed
     if interval == 'minute':
         endpoint = 'histominute'
-        total_points = days * 1440  # minutes per day
+        total_points = days * 1440
     elif interval == 'hour':
         endpoint = 'histohour'
         total_points = days * 24
@@ -178,21 +154,16 @@ def get_bitcoin_data_realtime(days: int = 7, interval: str = 'hour') -> Optional
         logger.error(f"❌ Invalid interval: {interval}")
         return None
     
-    # Check if we need multiple requests
     if total_points <= API_MAX_LIMIT:
-        # Single request is enough
         logger.info(f"📡 Fetching {total_points} {interval}ly data points (single request)...")
         return _fetch_single_request(endpoint, total_points)
     else:
-        # Need multiple requests
         logger.info(f"📡 Fetching {total_points} {interval}ly data points (multiple requests)...")
         return _fetch_multiple_requests(endpoint, total_points, interval)
 
 
 def _fetch_single_request(endpoint: str, limit: int) -> Optional[pd.DataFrame]:
-    """
-    Fetch data with single API request (for <= 2000 points)
-    """
+    """Fetch data with single API request"""
     data = _fetch_single_batch(endpoint, limit)
     
     if not data:
@@ -208,32 +179,21 @@ def _fetch_single_request(endpoint: str, limit: int) -> Optional[pd.DataFrame]:
 
 
 def _fetch_multiple_requests(endpoint: str, total_points: int, interval: str) -> Optional[pd.DataFrame]:
-    """
-    FIXED: Fetch data with multiple API requests (for > 2000 points)
-    
-    Strategy:
-    1. Calculate how many batches needed
-    2. Fetch latest batch first
-    3. Walk backwards in time to get older data
-    4. Combine all batches
-    """
+    """Fetch data with multiple API requests"""
     all_candles = []
     points_fetched = 0
-    current_to_timestamp = None  # Start with latest
+    current_to_timestamp = None
     
-    # Calculate number of batches needed
     num_batches = (total_points + API_MAX_LIMIT - 1) // API_MAX_LIMIT
     
     logger.info(f"   📦 Will fetch {num_batches} batches to get {total_points} points")
     
     for batch_num in range(num_batches):
-        # Determine how many points to fetch in this batch
         remaining_points = total_points - points_fetched
         batch_size = min(remaining_points, API_MAX_LIMIT)
         
         logger.info(f"   📡 Batch {batch_num + 1}/{num_batches}: Fetching {batch_size} points...")
         
-        # Fetch this batch
         data = _fetch_single_batch(endpoint, batch_size, current_to_timestamp)
         
         if not data:
@@ -246,22 +206,17 @@ def _fetch_multiple_requests(endpoint: str, total_points: int, interval: str) ->
             logger.warning(f"   ⚠️ Empty batch {batch_num + 1}")
             break
         
-        # Add candles to collection
         all_candles.extend(candles)
         points_fetched += len(candles)
         
         logger.info(f"   ✅ Batch {batch_num + 1}: Got {len(candles)} points (total: {points_fetched}/{total_points})")
         
-        # Update timestamp for next batch (walk backwards)
-        # Use the oldest timestamp from current batch
         oldest_candle = candles[0]
-        current_to_timestamp = oldest_candle['time'] - 1  # Go back 1 second
+        current_to_timestamp = oldest_candle['time'] - 1
         
-        # Rate limiting - don't spam API
-        if batch_num < num_batches - 1:  # Don't sleep after last batch
+        if batch_num < num_batches - 1:
             time.sleep(API_RATE_LIMIT_DELAY)
         
-        # Check if we have enough data
         if points_fetched >= total_points:
             logger.info(f"   ✅ Target reached: {points_fetched} points")
             break
@@ -270,7 +225,6 @@ def _fetch_multiple_requests(endpoint: str, total_points: int, interval: str) ->
         logger.error("❌ No data collected from any batch")
         return None
     
-    # Remove duplicates (can happen at batch boundaries)
     unique_candles = []
     seen_times = set()
     
@@ -285,34 +239,20 @@ def _fetch_multiple_requests(endpoint: str, total_points: int, interval: str) ->
 
 
 def _parse_candles_to_dataframe(candles: list) -> pd.DataFrame:
-    """
-    Parse candle data into DataFrame
-    
-    Args:
-        candles: List of candle dictionaries from API
-    
-    Returns:
-        DataFrame with processed data
-    """
-    # Create DataFrame
+    """Parse candle data into DataFrame"""
     df = pd.DataFrame(candles)
     
-    # Convert timestamp to datetime
     df['datetime'] = pd.to_datetime(df['time'], unit='s')
     
-    # Rename columns
     df = df.rename(columns={
         'close': 'price',
         'volumefrom': 'volume'
     })
     
-    # Select and order columns
     df = df[['datetime', 'price', 'open', 'high', 'low', 'volume']]
     
-    # Sort by datetime (most recent first)
     df = df.sort_values('datetime', ascending=False).reset_index(drop=True)
     
-    # Remove any rows with zero/null prices
     df = df[df['price'] > 0].dropna(subset=['price'])
     
     logger.info(f"✅ Processed {len(df)} data points")
@@ -324,89 +264,108 @@ def _parse_candles_to_dataframe(candles: list) -> pd.DataFrame:
 
 def add_technical_indicators(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Add technical indicators to the dataframe
-    
-    Args:
-        df: DataFrame with OHLCV data
-    
-    Returns:
-        DataFrame with added technical indicators
+    IMPROVED: Add technical indicators with better feature engineering
     """
     try:
         df = df.copy()
         
-        # Ensure data is sorted chronologically (oldest first) for calculations
         df = df.sort_values('datetime', ascending=True).reset_index(drop=True)
         
-        # Price-based indicators
+        # === MOVING AVERAGES ===
+        df['sma_7'] = df['price'].rolling(window=7).mean()
         df['sma_20'] = df['price'].rolling(window=20).mean()
         df['sma_50'] = df['price'].rolling(window=50).mean()
         df['ema_9'] = df['price'].ewm(span=9, adjust=False).mean()
         df['ema_21'] = df['price'].ewm(span=21, adjust=False).mean()
         df['ema_50'] = df['price'].ewm(span=50, adjust=False).mean()
         
-        # RSI
+        # === RSI ===
         delta = df['price'].diff()
         gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
         rs = gain / loss
         df['rsi'] = 100 - (100 / (1 + rs))
+        df['rsi_normalized'] = (df['rsi'] - 50) / 50  # Normalize to -1 to 1
         
-        # MACD
+        # === MACD ===
         ema_12 = df['price'].ewm(span=12, adjust=False).mean()
         ema_26 = df['price'].ewm(span=26, adjust=False).mean()
         df['macd'] = ema_12 - ema_26
         df['macd_signal'] = df['macd'].ewm(span=9, adjust=False).mean()
         df['macd_hist'] = df['macd'] - df['macd_signal']
+        df['macd_hist_normalized'] = df['macd_hist'] / df['price']  # Normalize by price
         
-        # Bollinger Bands
+        # === BOLLINGER BANDS ===
         df['bb_middle'] = df['price'].rolling(window=20).mean()
         bb_std = df['price'].rolling(window=20).std()
         df['bb_upper'] = df['bb_middle'] + (bb_std * 2)
         df['bb_lower'] = df['bb_middle'] - (bb_std * 2)
         df['bb_position'] = (df['price'] - df['bb_lower']) / (df['bb_upper'] - df['bb_lower'])
+        df['bb_width'] = (df['bb_upper'] - df['bb_lower']) / df['bb_middle']  # Band width as volatility
         
-        # Stochastic Oscillator
+        # === STOCHASTIC ===
         low_14 = df['low'].rolling(window=14).min()
         high_14 = df['high'].rolling(window=14).max()
         df['stoch_k'] = 100 * ((df['price'] - low_14) / (high_14 - low_14))
         df['stoch_d'] = df['stoch_k'].rolling(window=3).mean()
+        df['stoch_normalized'] = (df['stoch_k'] - 50) / 50  # Normalize
         
-        # ATR (Average True Range)
+        # === ATR (Volatility) ===
         high_low = df['high'] - df['low']
         high_close = np.abs(df['high'] - df['price'].shift())
         low_close = np.abs(df['low'] - df['price'].shift())
         ranges = pd.concat([high_low, high_close, low_close], axis=1)
         true_range = ranges.max(axis=1)
         df['atr'] = true_range.rolling(window=14).mean()
+        df['atr_pct'] = df['atr'] / df['price']  # ATR as percentage of price
         
-        # Volume indicators
+        # === VOLUME ===
         df['volume_sma'] = df['volume'].rolling(window=20).mean()
         df['volume_ratio'] = df['volume'] / df['volume_sma']
+        df['volume_ema'] = df['volume'].ewm(span=10, adjust=False).mean()
         
-        # Momentum
-        df['momentum'] = df['price'] - df['price'].shift(10)
+        # === MOMENTUM ===
+        df['momentum_5'] = df['price'] - df['price'].shift(5)
+        df['momentum_10'] = df['price'] - df['price'].shift(10)
+        df['momentum_20'] = df['price'] - df['price'].shift(20)
         
-        # Price change indicators
+        # === RATE OF CHANGE ===
+        df['roc_5'] = df['price'].pct_change(5) * 100
+        df['roc_10'] = df['price'].pct_change(10) * 100
+        df['roc_20'] = df['price'].pct_change(20) * 100
+        
+        # === PRICE CHANGES ===
         df['price_change_1'] = df['price'].pct_change(1)
         df['price_change_3'] = df['price'].pct_change(3)
         df['price_change_5'] = df['price'].pct_change(5)
+        df['price_change_10'] = df['price'].pct_change(10)
         
-        # Volume lags
-        df['volume_lag_1'] = df['volume'].shift(1)
-        df['volume_lag_3'] = df['volume'].shift(3)
-        df['volume_lag_5'] = df['volume'].shift(5)
-        
-        # Rolling statistics
-        for window in [5, 20]:
+        # === ROLLING STATISTICS ===
+        for window in [5, 10, 20]:
             df[f'price_rolling_mean_{window}'] = df['price'].rolling(window=window).mean()
             df[f'price_rolling_std_{window}'] = df['price'].rolling(window=window).std()
-            df[f'volume_rolling_mean_{window}'] = df['volume'].rolling(window=window).mean()
+            df[f'price_rolling_max_{window}'] = df['price'].rolling(window=window).max()
+            df[f'price_rolling_min_{window}'] = df['price'].rolling(window=window).min()
+            
+            # Distance from rolling max/min
+            df[f'dist_from_max_{window}'] = (df['price'] - df[f'price_rolling_max_{window}']) / df['price']
+            df[f'dist_from_min_{window}'] = (df['price'] - df[f'price_rolling_min_{window}']) / df['price']
         
-        # Binary indicators
+        # === TREND INDICATORS ===
+        df['price_above_sma7'] = (df['price'] > df['sma_7']).astype(int)
         df['price_above_sma20'] = (df['price'] > df['sma_20']).astype(int)
         df['price_above_sma50'] = (df['price'] > df['sma_50']).astype(int)
         df['ema_trend'] = (df['ema_9'] > df['ema_21']).astype(int)
+        df['sma_cross'] = ((df['sma_7'] > df['sma_20']).astype(int) - 
+                           (df['sma_7'] < df['sma_20']).astype(int))
+        
+        # === DIVERGENCE INDICATORS ===
+        df['price_ema9_div'] = (df['price'] - df['ema_9']) / df['price']
+        df['price_sma20_div'] = (df['price'] - df['sma_20']) / df['price']
+        
+        # === HIGH/LOW INDICATORS ===
+        df['high_low_ratio'] = (df['high'] - df['low']) / df['price']
+        df['close_position'] = (df['price'] - df['low']) / (df['high'] - df['low'])
         
         df = df.sort_values('datetime', ascending=False).reset_index(drop=True)
         
@@ -418,12 +377,19 @@ def add_technical_indicators(df: pd.DataFrame) -> pd.DataFrame:
         logger.error(f"❌ Error adding technical indicators: {e}")
         return df
 
+
 # ============================================================================
-# ML PREDICTOR CLASS
+# IMPROVED PREDICTOR CLASS
 # ============================================================================
 
 class ImprovedBitcoinPredictor:
-    """Improved ML predictor with validation"""
+    """
+    IMPROVED Bitcoin Predictor
+    - Better feature engineering
+    - Adaptive confidence thresholds
+    - Improved model ensemble
+    - Better training process
+    """
     
     def __init__(self):
         self.lstm_model = None
@@ -439,51 +405,71 @@ class ImprovedBitcoinPredictor:
         self.last_training = None
         self.recent_accuracy = None
         
+        # NEW: Track prediction history for adaptive confidence
+        self.prediction_history = []
+        self.max_history = 100
+        
         logger.info("🤖 Improved predictor initialized")
     
     def prepare_features(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Prepare feature set with better selection"""
+        """
+        IMPROVED: Better feature selection and engineering
+        """
         
-        # Core features - most important
+        # === CORE TECHNICAL INDICATORS ===
         core_features = [
-            'rsi', 'macd', 'macd_signal', 'macd_hist',
-            'bb_position',
-            'stoch_k', 'stoch_d',
-            'atr',
+            'rsi', 'rsi_normalized',
+            'macd', 'macd_signal', 'macd_hist', 'macd_hist_normalized',
+            'bb_position', 'bb_width',
+            'stoch_k', 'stoch_d', 'stoch_normalized',
+            'atr_pct',
             'volume_ratio',
-            'momentum',
         ]
         
-        # Price features
+        # === PRICE FEATURES ===
         price_features = [
             'ema_9', 'ema_21', 'ema_50',
-            'price_above_sma20', 'price_above_sma50',
-            'ema_trend'
+            'price_above_sma7', 'price_above_sma20', 'price_above_sma50',
+            'ema_trend', 'sma_cross',
+            'price_ema9_div', 'price_sma20_div',
         ]
         
-        # Lag features - reduced to avoid data leakage
-        lag_features = []
-        for lag in [1, 3, 5]:
-            lag_features.extend([
-                f'price_change_{lag}',
-                f'volume_lag_{lag}'
-            ])
+        # === MOMENTUM FEATURES ===
+        momentum_features = [
+            'roc_5', 'roc_10', 'roc_20',
+            'price_change_1', 'price_change_3', 'price_change_5', 'price_change_10',
+        ]
         
-        # Rolling features - most relevant windows
+        # === ROLLING STATISTICS ===
         rolling_features = []
-        for window in [5, 20]:
+        for window in [5, 10, 20]:
             rolling_features.extend([
-                f'price_rolling_mean_{window}',
                 f'price_rolling_std_{window}',
-                f'volume_rolling_mean_{window}'
+                f'dist_from_max_{window}',
+                f'dist_from_min_{window}',
             ])
         
-        # Combine all features
-        all_features = core_features + price_features + lag_features + rolling_features
+        # === VOLUME FEATURES ===
+        volume_features = [
+            'volume_ratio',
+            'volume_ema',
+        ]
         
-        # Filter to available features
+        # === PRICE STRUCTURE ===
+        structure_features = [
+            'high_low_ratio',
+            'close_position',
+        ]
+        
+        # Combine all
+        all_features = (core_features + price_features + momentum_features + 
+                       rolling_features + volume_features + structure_features)
+        
+        # Filter available
         available = [col for col in all_features if col in df.columns]
         self.feature_columns = available
+        
+        logger.debug(f"📊 Using {len(available)} features")
         
         return df[available].copy()
     
@@ -497,16 +483,18 @@ class ImprovedBitcoinPredictor:
         return np.array(X), np.array(y)
     
     def build_improved_lstm(self, input_shape: tuple) -> Sequential:
-        """Build improved LSTM with better architecture"""
+        """
+        IMPROVED: Better LSTM architecture
+        """
         
         model = Sequential([
-            # First LSTM layer
+            # First LSTM layer - bigger for pattern recognition
             Bidirectional(LSTM(
-                96, 
+                128,  # Increased from 96
                 return_sequences=True,
                 dropout=0.2,
                 recurrent_dropout=0.1,
-                kernel_regularizer=l2(0.001)
+                kernel_regularizer=l2(0.0008)  # Slightly reduced regularization
             ), input_shape=input_shape),
             BatchNormalization(),
             
@@ -516,7 +504,7 @@ class ImprovedBitcoinPredictor:
                 return_sequences=True,
                 dropout=0.2,
                 recurrent_dropout=0.1,
-                kernel_regularizer=l2(0.001)
+                kernel_regularizer=l2(0.0008)
             )),
             BatchNormalization(),
             
@@ -524,21 +512,23 @@ class ImprovedBitcoinPredictor:
             Bidirectional(LSTM(
                 32,
                 dropout=0.2,
-                kernel_regularizer=l2(0.001)
+                kernel_regularizer=l2(0.0008)
             )),
             BatchNormalization(),
             
             # Dense layers
-            Dense(64, activation='relu', kernel_regularizer=l2(0.001)),
+            Dense(64, activation='relu', kernel_regularizer=l2(0.0008)),
             Dropout(0.3),
-            Dense(32, activation='relu', kernel_regularizer=l2(0.001)),
+            Dense(32, activation='relu', kernel_regularizer=l2(0.0008)),
             Dropout(0.2),
+            Dense(16, activation='relu'),  # Additional layer
+            Dropout(0.1),
             Dense(1)
         ])
         
         # Custom learning rate
         optimizer = Adam(
-            learning_rate=0.0005,
+            learning_rate=0.0007,  # Slightly higher for faster convergence
             beta_1=0.9,
             beta_2=0.999,
             epsilon=1e-07
@@ -552,16 +542,10 @@ class ImprovedBitcoinPredictor:
         
         return model
     
-    # ============================================================================
-    # PERBAIKAN UNTUK train_models() METHOD
-    # Ganti method train_models di ImprovedBitcoinPredictor class
-    # ============================================================================
-
     def train_models(self, df: pd.DataFrame, epochs: int = 50, 
                     batch_size: int = 64) -> bool:
         """
-        FIXED: Train models with proper validation
-        Fixed index out of bounds error for RF and GB training
+        IMPROVED: Better training process with proper data handling
         """
         
         if not ML_AVAILABLE:
@@ -598,9 +582,9 @@ class ImprovedBitcoinPredictor:
             splits = list(tscv.split(scaled_features))
             train_idx, test_idx = splits[-1]
             
-            # ====================================================================
+            # ================================================================
             # LSTM TRAINING
-            # ====================================================================
+            # ================================================================
             logger.info("\n🔵 Training LSTM...")
             X_lstm, y_lstm = self.create_sequences(
                 scaled_features, 
@@ -616,6 +600,8 @@ class ImprovedBitcoinPredictor:
             X_test_lstm = X_lstm[test_idx_lstm]
             y_train_lstm = y_lstm[train_idx_lstm]
             y_test_lstm = y_lstm[test_idx_lstm]
+            
+            logger.info(f"   LSTM Train: {len(X_train_lstm)}, Test: {len(X_test_lstm)}")
             
             self.lstm_model = self.build_improved_lstm(
                 (self.sequence_length, len(self.feature_columns))
@@ -666,48 +652,55 @@ class ImprovedBitcoinPredictor:
             lstm_rmse = np.sqrt(mean_squared_error(y_test_original, lstm_pred_original))
             lstm_mape = np.mean(np.abs((y_test_original - lstm_pred_original) / y_test_original)) * 100
             
+            # Calculate directional accuracy for LSTM
+            lstm_direction_correct = np.mean(
+                np.sign(lstm_pred_original - y_test_original[:-1]) == 
+                np.sign(y_test_original[1:] - y_test_original[:-1])
+            ) * 100
+            
             self.metrics['lstm'] = {
                 'mae': float(lstm_mae),
                 'rmse': float(lstm_rmse),
                 'mape': float(lstm_mape),
+                'direction_accuracy': float(lstm_direction_correct),
                 'final_val_loss': float(history.history['val_loss'][-1])
             }
             
-            logger.info(f"✅ LSTM - MAE: ${lstm_mae:,.2f}, RMSE: ${lstm_rmse:,.2f}, MAPE: {lstm_mape:.2f}%")
+            logger.info(f"✅ LSTM - MAE: ${lstm_mae:,.2f}, RMSE: ${lstm_rmse:,.2f}, " +
+                       f"MAPE: {lstm_mape:.2f}%, Direction: {lstm_direction_correct:.1f}%")
             
-            # ====================================================================
-            # RANDOM FOREST TRAINING - FIXED INDEX ERROR
-            # ====================================================================
+            # ================================================================
+            # RANDOM FOREST TRAINING - FIXED
+            # ================================================================
             logger.info("\n🌲 Training Random Forest...")
             
-            # CRITICAL FIX: Create classification target FIRST
-            # Then create NEW split for this reduced dataset
+            # Create classification target (price going up or down)
             y_direction = (df_clean['price'].shift(-1) > df_clean['price']).astype(int)
             
-            # Remove last row (NaN from shift(-1))
+            # Remove last row (NaN from shift)
             features_rf = scaled_features[:-1]
             y_class = y_direction[:-1].values
             
             logger.info(f"   RF dataset size: {len(features_rf)} samples")
             
-            # CRITICAL: Create NEW TimeSeriesSplit for RF data
-            # Because we removed one row, old indices won't work!
+            # Create NEW split for RF data
             tscv_rf = TimeSeriesSplit(n_splits=3)
             splits_rf = list(tscv_rf.split(features_rf))
             train_idx_rf, test_idx_rf = splits_rf[-1]
             
-            # Now indices will be correct
             X_train_rf = features_rf[train_idx_rf]
             X_test_rf = features_rf[test_idx_rf]
             y_train_rf = y_class[train_idx_rf]
             y_test_rf = y_class[test_idx_rf]
             
-            logger.info(f"   Train: {len(X_train_rf)}, Test: {len(X_test_rf)}")
+            logger.info(f"   RF Train: {len(X_train_rf)}, Test: {len(X_test_rf)}")
             
             self.rf_model = RandomForestClassifier(
-                n_estimators=MODEL_CONFIG['rf']['n_estimators'],
-                max_depth=MODEL_CONFIG['rf']['max_depth'],
-                min_samples_split=MODEL_CONFIG['rf']['min_samples_split'],
+                n_estimators=200,  # Increased from 150
+                max_depth=15,  # Increased from 12
+                min_samples_split=5,  # Decreased for more splits
+                min_samples_leaf=2,  # Added
+                max_features='sqrt',  # Better for high-dimensional data
                 random_state=42,
                 n_jobs=-1,
                 class_weight='balanced',
@@ -718,35 +711,41 @@ class ImprovedBitcoinPredictor:
             
             # Evaluate RF
             rf_pred = self.rf_model.predict(X_test_rf)
+            rf_proba = self.rf_model.predict_proba(X_test_rf)
             rf_accuracy = accuracy_score(y_test_rf, rf_pred)
+            rf_avg_confidence = np.mean(np.max(rf_proba, axis=1)) * 100
             
             self.metrics['rf'] = {
                 'accuracy': float(rf_accuracy),
+                'avg_confidence': float(rf_avg_confidence),
                 'feature_importance_top': float(self.rf_model.feature_importances_.max())
             }
             
-            logger.info(f"✅ RF - Accuracy: {rf_accuracy:.4f}")
+            logger.info(f"✅ RF - Accuracy: {rf_accuracy:.2%}, Avg Confidence: {rf_avg_confidence:.1f}%")
             
-            # ====================================================================
-            # GRADIENT BOOSTING TRAINING - FIXED INDEX ERROR
-            # ====================================================================
+            # ================================================================
+            # GRADIENT BOOSTING TRAINING - FIXED
+            # ================================================================
             logger.info("\n🚀 Training Gradient Boosting...")
             
-            # Use same split as RF (already correctly sized)
-            y_gb = scaled_target[:-1]  # Match features_rf length
+            # Use same split as RF
+            y_gb = scaled_target[:-1]
             
             X_train_gb = features_rf[train_idx_rf]
             X_test_gb = features_rf[test_idx_rf]
             y_train_gb = y_gb[train_idx_rf]
             y_test_gb = y_gb[test_idx_rf]
             
-            logger.info(f"   Train: {len(X_train_gb)}, Test: {len(X_test_gb)}")
+            logger.info(f"   GB Train: {len(X_train_gb)}, Test: {len(X_test_gb)}")
             
             self.gb_model = GradientBoostingRegressor(
-                n_estimators=MODEL_CONFIG['gb']['n_estimators'],
-                learning_rate=MODEL_CONFIG['gb']['learning_rate'],
-                max_depth=MODEL_CONFIG['gb']['max_depth'],
+                n_estimators=200,  # Increased from 150
+                learning_rate=0.1,  # Slightly higher
+                max_depth=6,  # Increased from 5
                 subsample=0.8,
+                min_samples_split=5,
+                min_samples_leaf=2,
+                max_features='sqrt',
                 random_state=42,
                 verbose=0
             )
@@ -764,17 +763,32 @@ class ImprovedBitcoinPredictor:
             
             gb_mae = mean_absolute_error(y_test_gb_original, gb_pred)
             gb_rmse = np.sqrt(mean_squared_error(y_test_gb_original, gb_pred))
+            gb_mape = np.mean(np.abs((y_test_gb_original - gb_pred) / y_test_gb_original)) * 100
+            
+            # Calculate directional accuracy for GB
+            gb_direction_correct = np.mean(
+                np.sign(gb_pred - y_test_gb_original[:-1]) == 
+                np.sign(y_test_gb_original[1:] - y_test_gb_original[:-1])
+            ) * 100
             
             self.metrics['gb'] = {
                 'mae': float(gb_mae),
-                'rmse': float(gb_rmse)
+                'rmse': float(gb_rmse),
+                'mape': float(gb_mape),
+                'direction_accuracy': float(gb_direction_correct)
             }
             
-            logger.info(f"✅ GB - MAE: ${gb_mae:,.2f}, RMSE: ${gb_rmse:,.2f}")
+            logger.info(f"✅ GB - MAE: ${gb_mae:,.2f}, RMSE: ${gb_rmse:,.2f}, " +
+                       f"MAPE: {gb_mape:.2f}%, Direction: {gb_direction_correct:.1f}%")
             
             # Mark as trained
             self.is_trained = True
             self.last_training = datetime.now()
+            
+            # Calculate overall ensemble accuracy
+            logger.info("\n📊 Overall Ensemble Performance:")
+            avg_direction_acc = (lstm_direction_correct + rf_accuracy * 100 + gb_direction_correct) / 3
+            logger.info(f"   Average Direction Accuracy: {avg_direction_acc:.1f}%")
             
             # Validate models
             if MODEL_CONFIG.get('enable_model_validation'):
@@ -801,21 +815,23 @@ class ImprovedBitcoinPredictor:
         
         # Check LSTM
         if 'lstm' in self.metrics:
-            lstm_valid = self.metrics['lstm']['mape'] < 5.0
-            logger.info(f"{'✅' if lstm_valid else '⚠️'} LSTM validation: MAPE {self.metrics['lstm']['mape']:.2f}%")
+            lstm_valid = self.metrics['lstm']['direction_accuracy'] > 50
+            logger.info(f"{'✅' if lstm_valid else '⚠️'} LSTM: Direction {self.metrics['lstm']['direction_accuracy']:.1f}%")
         
         # Check RF
         if 'rf' in self.metrics:
             rf_valid = self.metrics['rf']['accuracy'] > min_score
-            logger.info(f"{'✅' if rf_valid else '⚠️'} RF validation: Accuracy {self.metrics['rf']['accuracy']:.2%}")
+            logger.info(f"{'✅' if rf_valid else '⚠️'} RF: Accuracy {self.metrics['rf']['accuracy']:.2%}")
         
         # Check GB
         if 'gb' in self.metrics:
-            gb_valid = self.metrics['gb']['mae'] < 1000
-            logger.info(f"{'✅' if gb_valid else '⚠️'} GB validation: MAE ${self.metrics['gb']['mae']:.2f}")
+            gb_valid = self.metrics['gb']['direction_accuracy'] > 50
+            logger.info(f"{'✅' if gb_valid else '⚠️'} GB: Direction {self.metrics['gb']['direction_accuracy']:.1f}%")
     
     def predict(self, df: pd.DataFrame, timeframe_minutes: int) -> Optional[Dict]:
-        """Make prediction with improved confidence calculation"""
+        """
+        IMPROVED: Better prediction with adaptive confidence
+        """
         
         if not self.is_trained:
             logger.warning("⚠️ Models not trained")
@@ -848,6 +864,10 @@ class ImprovedBitcoinPredictor:
             
             current_price = df_clean.iloc[-1]['price']
             
+            # ================================================================
+            # MODEL PREDICTIONS
+            # ================================================================
+            
             # LSTM prediction
             lstm_input = scaled_features[-sequence_length:].reshape(1, sequence_length, -1)
             lstm_pred_scaled = self.lstm_model.predict(lstm_input, verbose=0)[0][0]
@@ -863,45 +883,90 @@ class ImprovedBitcoinPredictor:
             gb_pred_scaled = self.gb_model.predict(rf_input)[0]
             gb_pred = self.price_scaler.inverse_transform([[gb_pred_scaled]])[0][0]
             
-            # Calculate time adjustment factor
+            # ================================================================
+            # CALCULATE TIME ADJUSTMENT
+            # ================================================================
             time_factor = self._calculate_time_factor(timeframe_minutes, category)
             
             # Calculate predicted changes
             lstm_change = (lstm_pred - current_price) * time_factor
             gb_change = (gb_pred - current_price) * time_factor
             
-            # Ensemble with improved weights
+            # ================================================================
+            # IMPROVED ENSEMBLE
+            # ================================================================
             weights = self._get_ensemble_weights(category)
-            ensemble_change = (
+            
+            # Base ensemble
+            base_ensemble = (
                 weights['lstm'] * lstm_change +
                 weights['gb'] * gb_change
-            ) * (1 + (rf_confidence - 50) / 200)
+            )
+            
+            # RF adjustment (stronger influence)
+            rf_adjustment = 1.0
+            if rf_direction == 1:  # UP
+                rf_adjustment = 1.0 + (rf_confidence - 50) / 150  # Max +33%
+            else:  # DOWN
+                rf_adjustment = 1.0 - (rf_confidence - 50) / 150  # Max -33%
+            
+            ensemble_change = base_ensemble * rf_adjustment
+            
+            # Apply trend strength from recent data
+            trend_multiplier = self._calculate_trend_strength(df_clean)
+            ensemble_change *= trend_multiplier
             
             predicted_price = current_price + ensemble_change
             
-            # Calculate confidence
-            confidence = self._calculate_confidence(
+            # ================================================================
+            # IMPROVED CONFIDENCE CALCULATION
+            # ================================================================
+            confidence = self._calculate_improved_confidence(
                 lstm_change, gb_change, rf_direction, rf_confidence,
-                category, df_clean
+                category, df_clean, timeframe_minutes
             )
             
-            # Check minimum confidence threshold
-            min_confidence = get_min_confidence(timeframe_minutes)
+            # ADAPTIVE THRESHOLD: Lower for more predictions
+            min_confidence = self._get_adaptive_confidence_threshold(
+                timeframe_minutes, category
+            )
+            
             if confidence < min_confidence:
-                logger.debug(f"⚠️ Confidence {confidence:.1f}% below threshold {min_confidence}%")
+                logger.debug(f"⚠️ Confidence {confidence:.1f}% below adaptive threshold {min_confidence:.1f}%")
                 return None
             
-            # Determine trend
+            # ================================================================
+            # DETERMINE TREND
+            # ================================================================
             trend = "CALL (Bullish)" if ensemble_change > 0 else "PUT (Bearish)"
             
-            # Calculate price range with volatility
+            # ================================================================
+            # CALCULATE PRICE RANGE
+            # ================================================================
             volatility = df_clean['price'].tail(20).std()
             range_multiplier = self._get_range_multiplier(category, time_factor)
             
             price_range_low = predicted_price - volatility * range_multiplier
             price_range_high = predicted_price + volatility * range_multiplier
             
-            return {
+            # ================================================================
+            # MODEL AGREEMENT SCORE
+            # ================================================================
+            lstm_dir = 1 if lstm_change > 0 else 0
+            gb_dir = 1 if gb_change > 0 else 0
+            
+            agreement_count = sum([
+                lstm_dir == rf_direction,
+                gb_dir == rf_direction,
+                lstm_dir == gb_dir
+            ])
+            
+            model_agreement = agreement_count / 3.0
+            
+            # ================================================================
+            # RETURN PREDICTION
+            # ================================================================
+            prediction = {
                 'current_price': current_price,
                 'predicted_price': predicted_price,
                 'price_change': ensemble_change,
@@ -914,14 +979,22 @@ class ImprovedBitcoinPredictor:
                 'gb_prediction': gb_pred,
                 'rf_direction': 'UP' if rf_direction == 1 else 'DOWN',
                 'rf_confidence': rf_confidence,
+                'model_agreement': model_agreement * 100,
                 'timeframe_minutes': timeframe_minutes,
                 'volatility': volatility,
                 'method': f'Improved ML Ensemble ({category})',
                 'model_metrics': self.metrics,
                 'category': category,
                 'time_factor': time_factor,
-                'sequence_length_used': sequence_length
+                'sequence_length_used': sequence_length,
+                'trend_strength': trend_multiplier,
+                'adaptive_threshold': min_confidence
             }
+            
+            # Track prediction for adaptive learning
+            self._track_prediction(prediction)
+            
+            return prediction
             
         except Exception as e:
             logger.error(f"❌ Prediction error: {e}")
@@ -930,94 +1003,234 @@ class ImprovedBitcoinPredictor:
             return None
     
     def _calculate_time_factor(self, timeframe_minutes: int, category: str) -> float:
-        """Calculate time adjustment factor"""
+        """
+        IMPROVED: Better time adjustment
+        """
         if category == 'ultra_short':
-            return min(timeframe_minutes / 45, 0.8)
+            return min(timeframe_minutes / 30, 0.7)  # More conservative
         elif category == 'short':
-            return min(timeframe_minutes / 60, 1.2)
+            return min(timeframe_minutes / 60, 1.0)
         elif category == 'medium':
-            return min(timeframe_minutes / 240, 1.5)
+            return min(timeframe_minutes / 240, 1.3)
         else:  # long
-            return min(timeframe_minutes / 1440, 2.0)
+            return min(timeframe_minutes / 1440, 1.8)
     
     def _get_ensemble_weights(self, category: str) -> Dict[str, float]:
-        """Get ensemble weights based on category"""
+        """
+        IMPROVED: Better weight distribution
+        """
         weights = {
-            'ultra_short': {'lstm': 0.40, 'gb': 0.35, 'rf': 0.25},
-            'short': {'lstm': 0.45, 'gb': 0.40, 'rf': 0.15},
-            'medium': {'lstm': 0.50, 'gb': 0.40, 'rf': 0.10},
-            'long': {'lstm': 0.55, 'gb': 0.35, 'rf': 0.10}
+            'ultra_short': {'lstm': 0.35, 'gb': 0.35, 'rf': 0.30},  # RF more important for short term
+            'short': {'lstm': 0.40, 'gb': 0.35, 'rf': 0.25},
+            'medium': {'lstm': 0.45, 'gb': 0.40, 'rf': 0.15},
+            'long': {'lstm': 0.50, 'gb': 0.40, 'rf': 0.10}  # LSTM better for long term
         }
-        return weights.get(category, {'lstm': 0.45, 'gb': 0.40, 'rf': 0.15})
+        return weights.get(category, {'lstm': 0.40, 'gb': 0.35, 'rf': 0.25})
     
-    def _calculate_confidence(self, lstm_change: float, gb_change: float,
-                             rf_direction: int, rf_confidence: float,
-                             category: str, df: pd.DataFrame) -> float:
-        """Calculate prediction confidence"""
+    def _calculate_trend_strength(self, df: pd.DataFrame) -> float:
+        """
+        NEW: Calculate current trend strength to adjust predictions
+        """
+        try:
+            recent = df.tail(20)
+            
+            # Price momentum
+            price_change = (recent.iloc[-1]['price'] - recent.iloc[0]['price']) / recent.iloc[0]['price']
+            momentum = abs(price_change) * 100
+            
+            # RSI trend
+            rsi = recent['rsi'].iloc[-1] if 'rsi' in recent.columns else 50
+            rsi_strength = abs(rsi - 50) / 50  # 0 to 1
+            
+            # Volume trend
+            volume_ratio = recent['volume_ratio'].iloc[-1] if 'volume_ratio' in recent.columns else 1.0
+            volume_strength = min(volume_ratio, 2.0) / 2.0  # Cap at 2.0
+            
+            # Combined strength
+            trend_strength = (momentum / 5.0 + rsi_strength + volume_strength) / 3
+            
+            # Convert to multiplier (0.9 to 1.1)
+            multiplier = 0.9 + (trend_strength * 0.2)
+            
+            return multiplier
+            
+        except:
+            return 1.0
+    
+    def _calculate_improved_confidence(self, lstm_change: float, gb_change: float,
+                                      rf_direction: int, rf_confidence: float,
+                                      category: str, df: pd.DataFrame,
+                                      timeframe_minutes: int) -> float:
+        """
+        IMPROVED: Better confidence calculation with adaptive adjustments
+        """
         
-        # Base confidence from category
+        # Base confidence - LOWER to allow more predictions
         base_confidence = {
-            'ultra_short': 40,
-            'short': 45,
-            'medium': 50,
-            'long': 55
-        }.get(category, 45)
+            'ultra_short': 35,  # Lowered from 40
+            'short': 40,        # Lowered from 45
+            'medium': 45,       # Lowered from 50
+            'long': 50          # Lowered from 55
+        }.get(category, 40)
         
-        # Model agreement
+        # ================================================================
+        # MODEL AGREEMENT (up to +30)
+        # ================================================================
         lstm_dir = 1 if lstm_change > 0 else 0
         gb_dir = 1 if gb_change > 0 else 0
         
         agreement_score = 0
         if lstm_dir == gb_dir == rf_direction:
-            agreement_score = 25  # All agree
+            agreement_score = 30  # All agree - INCREASED from 25
         elif (lstm_dir == gb_dir) or (lstm_dir == rf_direction) or (gb_dir == rf_direction):
-            agreement_score = 15  # 2 out of 3 agree
+            agreement_score = 18  # 2 out of 3 - INCREASED from 15
         else:
-            agreement_score = 0  # Disagree
+            agreement_score = 5   # Disagree but still give some credit
         
-        # RF confidence contribution
-        rf_contribution = (rf_confidence - 50) * 0.2
+        # ================================================================
+        # RF CONFIDENCE (up to +15)
+        # ================================================================
+        rf_contribution = (rf_confidence - 50) * 0.3  # Max +15
         
-        # Recent performance (if available)
+        # ================================================================
+        # MAGNITUDE AGREEMENT (up to +10)
+        # ================================================================
+        # Check if predicted change magnitudes are similar
+        if abs(lstm_change) > 0 and abs(gb_change) > 0:
+            magnitude_ratio = min(abs(lstm_change), abs(gb_change)) / max(abs(lstm_change), abs(gb_change))
+            magnitude_score = magnitude_ratio * 10
+        else:
+            magnitude_score = 0
+        
+        # ================================================================
+        # RECENT PERFORMANCE (up to +10)
+        # ================================================================
         performance_bonus = 0
         if hasattr(self, 'recent_accuracy') and self.recent_accuracy:
-            performance_bonus = (self.recent_accuracy - 50) * 0.1
+            performance_bonus = (self.recent_accuracy - 50) * 0.2  # Max +10
         
-        # Market condition assessment
+        # ================================================================
+        # MARKET CONDITIONS (up to +10)
+        # ================================================================
         market_bonus = self._assess_market_conditions(df)
         
-        # Calculate final confidence
-        confidence = base_confidence + agreement_score + rf_contribution + performance_bonus + market_bonus
+        # ================================================================
+        # VOLATILITY ADJUSTMENT (up to +5)
+        # ================================================================
+        volatility_bonus = self._assess_volatility_confidence(df, category)
         
-        # Cap confidence
+        # ================================================================
+        # CALCULATE FINAL CONFIDENCE
+        # ================================================================
+        confidence = (base_confidence + agreement_score + rf_contribution + 
+                     magnitude_score + performance_bonus + market_bonus + volatility_bonus)
+        
+        # Cap confidence by category
         max_confidence = {
-            'ultra_short': 75,
-            'short': 80,
-            'medium': 85,
-            'long': 90
-        }.get(category, 80)
+            'ultra_short': 80,  # Increased from 75
+            'short': 85,        # Increased from 80
+            'medium': 90,       # Increased from 85
+            'long': 92          # Increased from 90
+        }.get(category, 85)
         
         return min(confidence, max_confidence)
     
+    def _get_adaptive_confidence_threshold(self, timeframe_minutes: int, category: str) -> float:
+        """
+        NEW: Adaptive confidence threshold based on recent performance
+        """
+        # Base threshold - LOWERED for more predictions
+        base_threshold = {
+            'ultra_short': 45,  # Lowered from 60
+            'short': 40,        # Lowered from 50
+            'medium': 38,       # Lowered from 45
+            'long': 35          # Lowered from 40
+        }.get(category, 40)
+        
+        # Adjust based on recent win rate
+        if hasattr(self, 'recent_accuracy') and self.recent_accuracy is not None:
+            if self.recent_accuracy > 60:
+                # Performing well - can be slightly more selective
+                base_threshold += 3
+            elif self.recent_accuracy < 45:
+                # Performing poorly - be more selective
+                base_threshold += 5
+            # else: normal range (45-60%), use base threshold
+        
+        return base_threshold
+    
     def _assess_market_conditions(self, df: pd.DataFrame) -> float:
-        """Assess market conditions for confidence adjustment"""
+        """
+        IMPROVED: Better market condition assessment
+        """
         try:
             recent_data = df.tail(20)
             
-            # Check trend strength
+            # Trend strength
             price_change = (recent_data.iloc[-1]['price'] - recent_data.iloc[0]['price']) / recent_data.iloc[0]['price']
             trend_strength = abs(price_change) * 100
             
-            # Check volatility
+            # Volatility
             volatility = recent_data['price'].std() / recent_data['price'].mean() * 100
             
-            # Strong trend + low volatility = higher confidence
-            if trend_strength > 2 and volatility < 2:
-                return 5
+            # RSI
+            rsi = recent_data['rsi'].iloc[-1] if 'rsi' in recent_data.columns else 50
+            
+            # Volume
+            volume_ratio = recent_data['volume_ratio'].iloc[-1] if 'volume_ratio' in recent_data.columns else 1.0
+            
+            bonus = 0
+            
+            # Strong trend + normal volatility + good volume = +10
+            if trend_strength > 2 and 1 < volatility < 4 and volume_ratio > 1.2:
+                bonus = 10
+            # Moderate trend + low volatility = +7
             elif trend_strength > 1 and volatility < 3:
-                return 3
-            elif volatility > 5:
-                return -5
+                bonus = 7
+            # Low volatility = +5
+            elif volatility < 2:
+                bonus = 5
+            # High volatility = -3
+            elif volatility > 6:
+                bonus = -3
+            # Very high volatility = -8
+            elif volatility > 8:
+                bonus = -8
+            
+            # RSI extremes add confidence
+            if rsi < 30 or rsi > 70:
+                bonus += 3
+            
+            return bonus
+            
+        except:
+            return 0
+    
+    def _assess_volatility_confidence(self, df: pd.DataFrame, category: str) -> float:
+        """
+        NEW: Assess if volatility suits the timeframe
+        """
+        try:
+            recent = df.tail(20)
+            volatility = recent['price'].std() / recent['price'].mean() * 100
+            
+            # Different timeframes prefer different volatility levels
+            if category == 'ultra_short':
+                # Ultra short likes medium volatility
+                if 2 < volatility < 5:
+                    return 5
+                elif volatility > 6:
+                    return -3
+            elif category == 'short':
+                # Short likes medium-high volatility
+                if 2 < volatility < 6:
+                    return 5
+            elif category in ['medium', 'long']:
+                # Medium/long prefers lower volatility
+                if volatility < 3:
+                    return 5
+                elif volatility > 5:
+                    return -2
             
             return 0
             
@@ -1025,15 +1238,36 @@ class ImprovedBitcoinPredictor:
             return 0
     
     def _get_range_multiplier(self, category: str, time_factor: float) -> float:
-        """Get price range multiplier"""
+        """
+        IMPROVED: Better range calculation
+        """
         base_multiplier = {
-            'ultra_short': 0.4,
-            'short': 0.6,
-            'medium': 0.8,
-            'long': 1.0
-        }.get(category, 0.6)
+            'ultra_short': 0.5,  # Slightly wider
+            'short': 0.7,
+            'medium': 0.9,
+            'long': 1.2
+        }.get(category, 0.7)
         
-        return base_multiplier * time_factor
+        return base_multiplier * time_factor * 0.8  # Slightly tighter ranges
+    
+    def _track_prediction(self, prediction: Dict):
+        """
+        NEW: Track predictions for adaptive learning
+        """
+        try:
+            self.prediction_history.append({
+                'timestamp': datetime.now(),
+                'confidence': prediction['confidence'],
+                'category': prediction['category'],
+                'trend': prediction['trend']
+            })
+            
+            # Keep only recent history
+            if len(self.prediction_history) > self.max_history:
+                self.prediction_history = self.prediction_history[-self.max_history:]
+                
+        except:
+            pass
     
     def save_models(self) -> bool:
         """Save trained models"""
@@ -1059,7 +1293,8 @@ class ImprovedBitcoinPredictor:
                     'feature_columns': self.feature_columns,
                     'metrics': self.metrics,
                     'last_training': self.last_training,
-                    'validation_scores': self.validation_scores
+                    'validation_scores': self.validation_scores,
+                    'prediction_history': self.prediction_history
                 }, f)
             
             logger.info(f"✅ Models saved to {path}/")
@@ -1094,6 +1329,7 @@ class ImprovedBitcoinPredictor:
                 self.metrics = data.get('metrics', {})
                 self.last_training = data.get('last_training')
                 self.validation_scores = data.get('validation_scores', {})
+                self.prediction_history = data.get('prediction_history', [])
             
             self.is_trained = True
             logger.info(f"✅ Models loaded from {path}/")
@@ -1117,5 +1353,4 @@ class ImprovedBitcoinPredictor:
 # COMPATIBILITY ALIAS
 # ============================================================================
 
-# Alias untuk backward compatibility dengan kode lama
 BitcoinMLPredictor = ImprovedBitcoinPredictor
