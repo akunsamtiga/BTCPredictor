@@ -653,11 +653,16 @@ class ImprovedBitcoinPredictor:
             lstm_mape = np.mean(np.abs((y_test_original - lstm_pred_original) / y_test_original)) * 100
             
             # Calculate directional accuracy for LSTM
-            lstm_direction_correct = np.mean(
-                np.sign(lstm_pred_original - y_test_original[:-1]) == 
-                np.sign(y_test_original[1:] - y_test_original[:-1])
-            ) * 100
-            
+            if len(lstm_pred_original) > 1 and len(y_test_original) > 1:
+                # Ensure arrays are same length
+                min_len = min(len(lstm_pred_original), len(y_test_original)) - 1
+                lstm_direction_correct = np.mean(
+                    np.sign(lstm_pred_original[:min_len] - y_test_original[:min_len]) == 
+                    np.sign(y_test_original[1:min_len+1] - y_test_original[:min_len])
+                ) * 100
+            else:
+                lstm_direction_correct = 0.0     
+
             self.metrics['lstm'] = {
                 'mae': float(lstm_mae),
                 'rmse': float(lstm_rmse),
@@ -766,10 +771,14 @@ class ImprovedBitcoinPredictor:
             gb_mape = np.mean(np.abs((y_test_gb_original - gb_pred) / y_test_gb_original)) * 100
             
             # Calculate directional accuracy for GB
-            gb_direction_correct = np.mean(
-                np.sign(gb_pred - y_test_gb_original[:-1]) == 
-                np.sign(y_test_gb_original[1:] - y_test_gb_original[:-1])
-            ) * 100
+            if len(gb_pred) > 1 and len(y_test_gb_original) > 1:
+                min_len = min(len(gb_pred), len(y_test_gb_original)) - 1
+                gb_direction_correct = np.mean(
+                    np.sign(gb_pred[:min_len] - y_test_gb_original[:min_len]) == 
+                    np.sign(y_test_gb_original[1:min_len+1] - y_test_gb_original[:min_len])
+                ) * 100
+            else:
+                gb_direction_correct = 0.0
             
             self.metrics['gb'] = {
                 'mae': float(gb_mae),
