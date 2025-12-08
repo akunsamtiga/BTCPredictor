@@ -1,883 +1,1356 @@
 """
-Smart Scheduler - Timeframe-Based Prediction
-Each timeframe runs at its optimal interval with independent analysis
-ALL TIMESTAMPS IN WIB (UTC+7)
+IMPROVED Bitcoin Price Predictor
+FIXES:
+1. More frequent predictions with adaptive confidence
+2. Better win rate calculation
+3. Improved model ensemble
+4. Better feature engineering
 """
 
-import time
+import numpy as np
+import pandas as pd
 import logging
-import gc
-import signal
-import sys
-import os
-import psutil
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional
+from typing import Dict, Optional
+import pickle
+import os
+import requests
+import time
 
-from config import (
-    PREDICTION_CONFIG, MODEL_CONFIG, HEALTH_CONFIG, STRATEGY_CONFIG,
-    get_timeframe_category, get_timeframe_label, get_data_config_for_timeframe
-)
-from firebase_manager import FirebaseManager
-from system_health import SystemHealthMonitor
-from heartbeat import HeartbeatManager
-from alert_system import get_alert_manager, AlertSeverity
-from cache_manager import get_cache
-from btc_predictor_automated import ImprovedBitcoinPredictor
-from btc_predictor_automated import (
-    get_bitcoin_data_realtime, 
-    get_current_btc_price,
-    add_technical_indicators
-)
-from timezone_utils import get_local_now
+from config import MODEL_CONFIG, DATA_CONFIG, get_timeframe_category, get_min_confidence
+from sklearn.model_selection import TimeSeriesSplit
+from sklearn.metrics import accuracy_score, mean_squared_error, mean_absolute_error
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('logs/scheduler.log'),
-        logging.StreamHandler()
-    ]
-)
 logger = logging.getLogger(__name__)
 
+try:
+    from sklearn.ensemble import RandomForestClassifier, GradientBoostingRegressor
+    from sklearn.preprocessing import MinMaxScaler, StandardScaler
+    import tensorflow as tf
+    from tensorflow import keras
+    from keras.models import Sequential, load_model
+    from keras.layers import LSTM, Dense, Dropout, Bidirectional, BatchNormalization
+    from keras.callbacks import EarlyStopping, ReduceLROnPlateau, ModelCheckpoint
+    from keras.optimizers import Adam
+    from keras.regularizers import l2
+    ML_AVAILABLE = True
+except ImportError as e:
+    ML_AVAILABLE = False
+    logger.error(f"❌ ML libraries not available: {e}")
 
-class TimeframeScheduler:
-    """
-    Smart scheduler for each timeframe
-    Each timeframe has its own schedule and data requirements
-    """
+
+# ============================================================================
+# CONSTANTS
+# ============================================================================
+
+API_MAX_LIMIT = 2000
+API_RATE_LIMIT_DELAY = 1
+
+
+# ============================================================================
+# DATA FETCHING - UNCHANGED
+# ============================================================================
+
+def get_current_btc_price() -> Optional[float]:
+    """Get current Bitcoin price from CryptoCompare"""
+    api_key = DATA_CONFIG.get('cryptocompare_api_key')
     
-    def __init__(self, timeframe_minutes: int):
-        self.timeframe = timeframe_minutes
-        self.last_prediction = None
-        self.prediction_count = 0
-        self.category = get_timeframe_category(timeframe_minutes)
-        self.data_config = get_data_config_for_timeframe(timeframe_minutes)
-        
-    def should_predict_now(self) -> bool:
-        """
-        Check if this timeframe should make prediction now
-        Based on current time alignment with timeframe
-        """
-        now = datetime.now()
-        current_minute = now.hour * 60 + now.minute
-        
-        # Check if current time is aligned with timeframe interval
-        if current_minute % self.timeframe == 0:
-            # Check if we haven't predicted in this interval yet
-            if self.last_prediction is None:
-                return True
-            
-            # Check if enough time has passed since last prediction
-            time_since_last = (now - self.last_prediction).total_seconds() / 60
-            if time_since_last >= self.timeframe:
-                return True
-        
-        return False
+    if not api_key:
+        logger.error("❌ CryptoCompare API key not configured")
+        return None
     
-    def mark_prediction_made(self):
-        """Mark that prediction was made"""
-        self.last_prediction = datetime.now()
-        self.prediction_count += 1
+    url = "https://min-api.cryptocompare.com/data/price"
+    params = {
+        'fsym': 'BTC',
+        'tsyms': 'USD',
+        'api_key': api_key
+    }
     
-    def get_next_prediction_time(self) -> datetime:
-        """Get next scheduled prediction time"""
-        now = datetime.now()
-        current_minute = now.hour * 60 + now.minute
-        
-        # Calculate next aligned time
-        next_minute = ((current_minute // self.timeframe) + 1) * self.timeframe
-        
-        # Handle day rollover
-        next_hour = next_minute // 60
-        next_min = next_minute % 60
-        
-        if next_hour >= 24:
-            next_day = now + timedelta(days=1)
-            return next_day.replace(hour=next_hour % 24, minute=next_min, second=0, microsecond=0)
-        
-        return now.replace(hour=next_hour, minute=next_min, second=0, microsecond=0)
+    max_retries = 3
     
-    def get_independent_data(self) -> Optional[object]:
-        """
-        Fetch data specifically for this timeframe
-        Each timeframe gets its own optimized dataset
-        """
+    for attempt in range(max_retries):
         try:
-            logger.info(f"📡 [{get_timeframe_label(self.timeframe)}] Fetching independent data...")
-            logger.info(f"   Config: {self.data_config['days']} days, {self.data_config['interval']} interval")
+            response = requests.get(url, params=params, timeout=10)
+            response.raise_for_status()
             
-            df = get_bitcoin_data_realtime(
-                days=self.data_config['days'],
-                interval=self.data_config['interval']
-            )
+            data = response.json()
             
-            if df is None or len(df) < self.data_config['min_points']:
-                logger.warning(f"⚠️ Insufficient data: {len(df) if df is not None else 0}")
+            if 'USD' in data:
+                price = float(data['USD'])
+                logger.debug(f"💰 Current BTC price: ${price:,.2f}")
+                return price
+            else:
+                logger.warning(f"⚠️ Unexpected API response: {data}")
                 return None
-            
-            df = add_technical_indicators(df)
-            
-            logger.info(f"✅ Data ready: {len(df)} points")
-            return df
-            
+                
+        except requests.exceptions.RequestException as e:
+            logger.warning(f"⚠️ API request failed (attempt {attempt + 1}/{max_retries}): {e}")
+            if attempt < max_retries - 1:
+                time.sleep(2 ** attempt)
+            else:
+                logger.error(f"❌ Failed to get current price after {max_retries} attempts")
+                return None
         except Exception as e:
-            logger.error(f"❌ Error fetching data: {e}")
+            logger.error(f"❌ Error getting current price: {e}")
             return None
+    
+    return None
 
 
-class WatchdogTimer:
-    """Watchdog timer to detect hanging processes"""
+def _fetch_single_batch(endpoint: str, limit: int, to_timestamp: Optional[int] = None) -> Optional[Dict]:
+    """Fetch single batch of data from CryptoCompare API"""
+    api_key = DATA_CONFIG.get('cryptocompare_api_key')
     
-    def __init__(self, timeout=1200):
-        self.timeout = timeout
-        self.last_activity = time.time()
-        self.is_running = False
-        self.thread = None
+    url = f"https://min-api.cryptocompare.com/data/v2/{endpoint}"
+    params = {
+        'fsym': 'BTC',
+        'tsym': 'USD',
+        'limit': min(limit, API_MAX_LIMIT),
+        'api_key': api_key
+    }
     
-    def reset(self):
-        self.last_activity = time.time()
+    if to_timestamp:
+        params['toTs'] = to_timestamp
     
-    def start(self):
-        import threading
-        self.is_running = True
-        self.thread = threading.Thread(target=self._monitor, daemon=True)
-        self.thread.start()
-        logger.info(f"🕐 Watchdog started (timeout: {self.timeout}s)")
-    
-    def stop(self):
-        self.is_running = False
-    
-    def _monitor(self):
-        while self.is_running:
-            time.sleep(30)
-            elapsed = time.time() - self.last_activity
-            
-            if elapsed > self.timeout:
-                logger.error(f"❌ WATCHDOG TIMEOUT! No activity for {elapsed:.0f}s")
-                logger.error("🔄 Force restarting...")
-                os._exit(1)
+    try:
+        response = requests.get(url, params=params, timeout=30)
+        response.raise_for_status()
+        
+        data = response.json()
+        
+        if data.get('Response') == 'Error':
+            logger.error(f"❌ API Error: {data.get('Message')}")
+            return None
+        
+        if 'Data' not in data or 'Data' not in data['Data']:
+            logger.error(f"❌ Unexpected API response structure")
+            return None
+        
+        return data
+        
+    except Exception as e:
+        logger.error(f"❌ API request failed: {e}")
+        return None
 
 
-class ImprovedScheduler:
+def get_bitcoin_data_realtime(days: int = 7, interval: str = 'hour') -> Optional[pd.DataFrame]:
+    """Fetch historical Bitcoin data with automatic pagination"""
+    api_key = DATA_CONFIG.get('cryptocompare_api_key')
+    
+    if not api_key:
+        logger.error("❌ CryptoCompare API key not configured")
+        return None
+    
+    if interval == 'minute':
+        endpoint = 'histominute'
+        total_points = days * 1440
+    elif interval == 'hour':
+        endpoint = 'histohour'
+        total_points = days * 24
+    elif interval == 'day':
+        endpoint = 'histoday'
+        total_points = days
+    else:
+        logger.error(f"❌ Invalid interval: {interval}")
+        return None
+    
+    if total_points <= API_MAX_LIMIT:
+        logger.info(f"📡 Fetching {total_points} {interval}ly data points (single request)...")
+        return _fetch_single_request(endpoint, total_points)
+    else:
+        logger.info(f"📡 Fetching {total_points} {interval}ly data points (multiple requests)...")
+        return _fetch_multiple_requests(endpoint, total_points, interval)
+
+
+def _fetch_single_request(endpoint: str, limit: int) -> Optional[pd.DataFrame]:
+    """Fetch data with single API request"""
+    data = _fetch_single_batch(endpoint, limit)
+    
+    if not data:
+        return None
+    
+    candles = data['Data']['Data']
+    
+    if not candles:
+        logger.error("❌ No data returned from API")
+        return None
+    
+    return _parse_candles_to_dataframe(candles)
+
+
+def _fetch_multiple_requests(endpoint: str, total_points: int, interval: str) -> Optional[pd.DataFrame]:
+    """Fetch data with multiple API requests"""
+    all_candles = []
+    points_fetched = 0
+    current_to_timestamp = None
+    
+    num_batches = (total_points + API_MAX_LIMIT - 1) // API_MAX_LIMIT
+    
+    logger.info(f"   📦 Will fetch {num_batches} batches to get {total_points} points")
+    
+    for batch_num in range(num_batches):
+        remaining_points = total_points - points_fetched
+        batch_size = min(remaining_points, API_MAX_LIMIT)
+        
+        logger.info(f"   📡 Batch {batch_num + 1}/{num_batches}: Fetching {batch_size} points...")
+        
+        data = _fetch_single_batch(endpoint, batch_size, current_to_timestamp)
+        
+        if not data:
+            logger.error(f"   ❌ Failed to fetch batch {batch_num + 1}")
+            break
+        
+        candles = data['Data']['Data']
+        
+        if not candles:
+            logger.warning(f"   ⚠️ Empty batch {batch_num + 1}")
+            break
+        
+        all_candles.extend(candles)
+        points_fetched += len(candles)
+        
+        logger.info(f"   ✅ Batch {batch_num + 1}: Got {len(candles)} points (total: {points_fetched}/{total_points})")
+        
+        oldest_candle = candles[0]
+        current_to_timestamp = oldest_candle['time'] - 1
+        
+        if batch_num < num_batches - 1:
+            time.sleep(API_RATE_LIMIT_DELAY)
+        
+        if points_fetched >= total_points:
+            logger.info(f"   ✅ Target reached: {points_fetched} points")
+            break
+    
+    if not all_candles:
+        logger.error("❌ No data collected from any batch")
+        return None
+    
+    unique_candles = []
+    seen_times = set()
+    
+    for candle in all_candles:
+        if candle['time'] not in seen_times:
+            unique_candles.append(candle)
+            seen_times.add(candle['time'])
+    
+    logger.info(f"   🔍 Removed {len(all_candles) - len(unique_candles)} duplicate entries")
+    
+    return _parse_candles_to_dataframe(unique_candles)
+
+
+def _parse_candles_to_dataframe(candles: list) -> pd.DataFrame:
+    """Parse candle data into DataFrame"""
+    df = pd.DataFrame(candles)
+    
+    df['datetime'] = pd.to_datetime(df['time'], unit='s')
+    
+    df = df.rename(columns={
+        'close': 'price',
+        'volumefrom': 'volume'
+    })
+    
+    df = df[['datetime', 'price', 'open', 'high', 'low', 'volume']]
+    
+    df = df.sort_values('datetime', ascending=False).reset_index(drop=True)
+    
+    df = df[df['price'] > 0].dropna(subset=['price'])
+    
+    logger.info(f"✅ Processed {len(df)} data points")
+    logger.info(f"   Date range: {df.iloc[-1]['datetime']} to {df.iloc[0]['datetime']}")
+    logger.info(f"   Latest price: ${df.iloc[0]['price']:,.2f}")
+    
+    return df
+
+
+def add_technical_indicators(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Improved scheduler with smart timeframe-based prediction
-    Each timeframe runs independently at optimal intervals
+    IMPROVED: Add technical indicators with better feature engineering
+    """
+    try:
+        df = df.copy()
+        
+        df = df.sort_values('datetime', ascending=True).reset_index(drop=True)
+        
+        # === MOVING AVERAGES ===
+        df['sma_7'] = df['price'].rolling(window=7).mean()
+        df['sma_20'] = df['price'].rolling(window=20).mean()
+        df['sma_50'] = df['price'].rolling(window=50).mean()
+        df['ema_9'] = df['price'].ewm(span=9, adjust=False).mean()
+        df['ema_21'] = df['price'].ewm(span=21, adjust=False).mean()
+        df['ema_50'] = df['price'].ewm(span=50, adjust=False).mean()
+        
+        # === RSI ===
+        delta = df['price'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+        rs = gain / loss
+        df['rsi'] = 100 - (100 / (1 + rs))
+        df['rsi_normalized'] = (df['rsi'] - 50) / 50  # Normalize to -1 to 1
+        
+        # === MACD ===
+        ema_12 = df['price'].ewm(span=12, adjust=False).mean()
+        ema_26 = df['price'].ewm(span=26, adjust=False).mean()
+        df['macd'] = ema_12 - ema_26
+        df['macd_signal'] = df['macd'].ewm(span=9, adjust=False).mean()
+        df['macd_hist'] = df['macd'] - df['macd_signal']
+        df['macd_hist_normalized'] = df['macd_hist'] / df['price']  # Normalize by price
+        
+        # === BOLLINGER BANDS ===
+        df['bb_middle'] = df['price'].rolling(window=20).mean()
+        bb_std = df['price'].rolling(window=20).std()
+        df['bb_upper'] = df['bb_middle'] + (bb_std * 2)
+        df['bb_lower'] = df['bb_middle'] - (bb_std * 2)
+        df['bb_position'] = (df['price'] - df['bb_lower']) / (df['bb_upper'] - df['bb_lower'])
+        df['bb_width'] = (df['bb_upper'] - df['bb_lower']) / df['bb_middle']  # Band width as volatility
+        
+        # === STOCHASTIC ===
+        low_14 = df['low'].rolling(window=14).min()
+        high_14 = df['high'].rolling(window=14).max()
+        df['stoch_k'] = 100 * ((df['price'] - low_14) / (high_14 - low_14))
+        df['stoch_d'] = df['stoch_k'].rolling(window=3).mean()
+        df['stoch_normalized'] = (df['stoch_k'] - 50) / 50  # Normalize
+        
+        # === ATR (Volatility) ===
+        high_low = df['high'] - df['low']
+        high_close = np.abs(df['high'] - df['price'].shift())
+        low_close = np.abs(df['low'] - df['price'].shift())
+        ranges = pd.concat([high_low, high_close, low_close], axis=1)
+        true_range = ranges.max(axis=1)
+        df['atr'] = true_range.rolling(window=14).mean()
+        df['atr_pct'] = df['atr'] / df['price']  # ATR as percentage of price
+        
+        # === VOLUME ===
+        df['volume_sma'] = df['volume'].rolling(window=20).mean()
+        df['volume_ratio'] = df['volume'] / df['volume_sma']
+        df['volume_ema'] = df['volume'].ewm(span=10, adjust=False).mean()
+        
+        # === MOMENTUM ===
+        df['momentum_5'] = df['price'] - df['price'].shift(5)
+        df['momentum_10'] = df['price'] - df['price'].shift(10)
+        df['momentum_20'] = df['price'] - df['price'].shift(20)
+        
+        # === RATE OF CHANGE ===
+        df['roc_5'] = df['price'].pct_change(5) * 100
+        df['roc_10'] = df['price'].pct_change(10) * 100
+        df['roc_20'] = df['price'].pct_change(20) * 100
+        
+        # === PRICE CHANGES ===
+        df['price_change_1'] = df['price'].pct_change(1)
+        df['price_change_3'] = df['price'].pct_change(3)
+        df['price_change_5'] = df['price'].pct_change(5)
+        df['price_change_10'] = df['price'].pct_change(10)
+        
+        # === ROLLING STATISTICS ===
+        for window in [5, 10, 20]:
+            df[f'price_rolling_mean_{window}'] = df['price'].rolling(window=window).mean()
+            df[f'price_rolling_std_{window}'] = df['price'].rolling(window=window).std()
+            df[f'price_rolling_max_{window}'] = df['price'].rolling(window=window).max()
+            df[f'price_rolling_min_{window}'] = df['price'].rolling(window=window).min()
+            
+            # Distance from rolling max/min
+            df[f'dist_from_max_{window}'] = (df['price'] - df[f'price_rolling_max_{window}']) / df['price']
+            df[f'dist_from_min_{window}'] = (df['price'] - df[f'price_rolling_min_{window}']) / df['price']
+        
+        # === TREND INDICATORS ===
+        df['price_above_sma7'] = (df['price'] > df['sma_7']).astype(int)
+        df['price_above_sma20'] = (df['price'] > df['sma_20']).astype(int)
+        df['price_above_sma50'] = (df['price'] > df['sma_50']).astype(int)
+        df['ema_trend'] = (df['ema_9'] > df['ema_21']).astype(int)
+        df['sma_cross'] = ((df['sma_7'] > df['sma_20']).astype(int) - 
+                           (df['sma_7'] < df['sma_20']).astype(int))
+        
+        # === DIVERGENCE INDICATORS ===
+        df['price_ema9_div'] = (df['price'] - df['ema_9']) / df['price']
+        df['price_sma20_div'] = (df['price'] - df['sma_20']) / df['price']
+        
+        # === HIGH/LOW INDICATORS ===
+        df['high_low_ratio'] = (df['high'] - df['low']) / df['price']
+        df['close_position'] = (df['price'] - df['low']) / (df['high'] - df['low'])
+        
+        df = df.sort_values('datetime', ascending=False).reset_index(drop=True)
+        
+        logger.debug(f"✅ Added {len(df.columns) - 6} technical indicators")
+        
+        return df
+        
+    except Exception as e:
+        logger.error(f"❌ Error adding technical indicators: {e}")
+        return df
+
+
+# ============================================================================
+# IMPROVED PREDICTOR CLASS
+# ============================================================================
+
+class ImprovedBitcoinPredictor:
+    """
+    IMPROVED Bitcoin Predictor
+    - Better feature engineering
+    - Adaptive confidence thresholds
+    - Improved model ensemble
+    - Better training process
     """
     
     def __init__(self):
-        self.predictor = None
-        self.firebase = None
-        self.health_monitor = SystemHealthMonitor()
-        self.heartbeat = None
-        self.alert_manager = None
-        self.cache = get_cache()
-        self.watchdog = WatchdogTimer(timeout=HEALTH_CONFIG['watchdog_timeout'])
-        self.is_running = False
-        
-        # Create scheduler for each timeframe
-        self.timeframe_schedulers: Dict[int, TimeframeScheduler] = {}
-        for tf in PREDICTION_CONFIG['active_timeframes']:
-            self.timeframe_schedulers[tf] = TimeframeScheduler(tf)
-        
-        # Performance tracking
-        self.consecutive_failures = 0
-        self.total_predictions = 0
-        self.successful_predictions = 0
-        self.failed_predictions = 0
-        self.last_successful_prediction = None
-        
-        # Recent performance
-        self.recent_results = []
+        self.lstm_model = None
+        self.rf_model = None
+        self.gb_model = None
+        self.price_scaler = MinMaxScaler()
+        self.feature_scaler = StandardScaler()
+        self.sequence_length = MODEL_CONFIG['lstm']['sequence_length']
+        self.feature_columns = []
+        self.is_trained = False
+        self.metrics = {}
+        self.validation_scores = {}
+        self.last_training = None
         self.recent_accuracy = None
         
-        # Cooldown
-        self.loss_streak = 0
-        self.cooldown_until = None
+        # NEW: Track prediction history for adaptive confidence
+        self.prediction_history = []
+        self.max_history = 100
         
-        # Memory tracking
-        self.start_memory = None
-        
-        # Shutdown handling
-        signal.signal(signal.SIGINT, self._signal_handler)
-        signal.signal(signal.SIGTERM, self._signal_handler)
-        
-        logger.info("🚀 Smart Scheduler initialized")
-        logger.info(f"📊 Active timeframes: {[get_timeframe_label(tf) for tf in PREDICTION_CONFIG['active_timeframes']]}")
-        self._display_schedule()
+        logger.info("🤖 Improved predictor initialized")
     
-    def _display_schedule(self):
-        """Display prediction schedule for each timeframe"""
-        logger.info("\n" + "="*80)
-        logger.info("📅 PREDICTION SCHEDULE")
-        logger.info("="*80)
+    def prepare_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        IMPROVED: Better feature selection and engineering
+        """
         
-        now = datetime.now()
+        # === CORE TECHNICAL INDICATORS ===
+        core_features = [
+            'rsi', 'rsi_normalized',
+            'macd', 'macd_signal', 'macd_hist', 'macd_hist_normalized',
+            'bb_position', 'bb_width',
+            'stoch_k', 'stoch_d', 'stoch_normalized',
+            'atr_pct',
+            'volume_ratio',
+        ]
         
-        for tf in sorted(self.timeframe_schedulers.keys()):
-            scheduler = self.timeframe_schedulers[tf]
-            next_time = scheduler.get_next_prediction_time()
-            time_until = (next_time - now).total_seconds() / 60
+        # === PRICE FEATURES ===
+        price_features = [
+            'ema_9', 'ema_21', 'ema_50',
+            'price_above_sma7', 'price_above_sma20', 'price_above_sma50',
+            'ema_trend', 'sma_cross',
+            'price_ema9_div', 'price_sma20_div',
+        ]
+        
+        # === MOMENTUM FEATURES ===
+        momentum_features = [
+            'roc_5', 'roc_10', 'roc_20',
+            'price_change_1', 'price_change_3', 'price_change_5', 'price_change_10',
+        ]
+        
+        # === ROLLING STATISTICS ===
+        rolling_features = []
+        for window in [5, 10, 20]:
+            rolling_features.extend([
+                f'price_rolling_std_{window}',
+                f'dist_from_max_{window}',
+                f'dist_from_min_{window}',
+            ])
+        
+        # === VOLUME FEATURES ===
+        volume_features = [
+            'volume_ratio',
+            'volume_ema',
+        ]
+        
+        # === PRICE STRUCTURE ===
+        structure_features = [
+            'high_low_ratio',
+            'close_position',
+        ]
+        
+        # Combine all
+        all_features = (core_features + price_features + momentum_features + 
+                       rolling_features + volume_features + structure_features)
+        
+        # Filter available
+        available = [col for col in all_features if col in df.columns]
+        self.feature_columns = available
+        
+        logger.debug(f"📊 Using {len(available)} features")
+        
+        return df[available].copy()
+    
+    def create_sequences(self, data: np.ndarray, target: np.ndarray, 
+                        sequence_length: int):
+        """Create sequences for LSTM"""
+        X, y = [], []
+        for i in range(len(data) - sequence_length):
+            X.append(data[i:i + sequence_length])
+            y.append(target[i + sequence_length])
+        return np.array(X), np.array(y)
+    
+    def build_improved_lstm(self, input_shape: tuple) -> Sequential:
+        """
+        IMPROVED: Better LSTM architecture
+        """
+        
+        model = Sequential([
+            # First LSTM layer - bigger for pattern recognition
+            Bidirectional(LSTM(
+                128,  # Increased from 96
+                return_sequences=True,
+                dropout=0.2,
+                recurrent_dropout=0.1,
+                kernel_regularizer=l2(0.0008)  # Slightly reduced regularization
+            ), input_shape=input_shape),
+            BatchNormalization(),
             
-            label = get_timeframe_label(tf)
-            category = scheduler.category.upper()
+            # Second LSTM layer
+            Bidirectional(LSTM(
+                64,
+                return_sequences=True,
+                dropout=0.2,
+                recurrent_dropout=0.1,
+                kernel_regularizer=l2(0.0008)
+            )),
+            BatchNormalization(),
             
-            logger.info(f"{label:8} ({category:12}) | Every {tf:4} min | Next: {next_time.strftime('%H:%M')} (in {time_until:.0f}min)")
+            # Third LSTM layer
+            Bidirectional(LSTM(
+                32,
+                dropout=0.2,
+                kernel_regularizer=l2(0.0008)
+            )),
+            BatchNormalization(),
+            
+            # Dense layers
+            Dense(64, activation='relu', kernel_regularizer=l2(0.0008)),
+            Dropout(0.3),
+            Dense(32, activation='relu', kernel_regularizer=l2(0.0008)),
+            Dropout(0.2),
+            Dense(16, activation='relu'),  # Additional layer
+            Dropout(0.1),
+            Dense(1)
+        ])
         
-        logger.info("="*80 + "\n")
+        # Custom learning rate
+        optimizer = Adam(
+            learning_rate=0.0007,  # Slightly higher for faster convergence
+            beta_1=0.9,
+            beta_2=0.999,
+            epsilon=1e-07
+        )
+        
+        model.compile(
+            optimizer=optimizer,
+            loss='huber',
+            metrics=['mae', 'mse']
+        )
+        
+        return model
     
-    def _signal_handler(self, signum, frame):
-        logger.info(f"\n⚠️ Received signal {signum}, shutting down...")
-        if self.alert_manager:
-            self.alert_manager.alert_system_shutdown("signal received")
-        self.stop()
-        sys.exit(0)
-    
-    def _check_memory(self) -> float:
-        """Check and manage memory usage"""
+    def train_models(self, df: pd.DataFrame, epochs: int = 50, 
+                    batch_size: int = 64) -> bool:
+        """
+        IMPROVED: Better training process with proper data handling
+        """
+        
+        if not ML_AVAILABLE:
+            logger.error("❌ ML libraries not available")
+            return False
+        
         try:
-            process = psutil.Process(os.getpid())
-            mem_mb = process.memory_info().rss / 1024 / 1024
+            logger.info("\n🤖 TRAINING IMPROVED MODELS...")
             
-            max_memory = HEALTH_CONFIG['max_memory_mb']
+            # Prepare data
+            df_clean = df.dropna().copy()
+            df_clean = df_clean.sort_values('datetime', ascending=True).reset_index(drop=True)
             
-            if mem_mb > max_memory:
-                logger.warning(f"⚠️ High memory: {mem_mb:.0f}MB (max: {max_memory}MB)")
-                
-                if self.alert_manager:
-                    self.alert_manager.alert_high_memory(mem_mb, max_memory)
-                
-                self._aggressive_memory_cleanup()
-                
-                mem_mb = process.memory_info().rss / 1024 / 1024
-                if mem_mb > max_memory * 1.2:
-                    logger.error(f"❌ Memory still high: {mem_mb:.0f}MB")
-                    if self.alert_manager:
-                        self.alert_manager.send_alert(
-                            "Critical Memory Usage",
-                            f"Memory: {mem_mb:.0f}MB. System restarting.",
-                            AlertSeverity.CRITICAL,
-                            "critical_memory"
-                        )
-                    self.stop()
-                    os._exit(1)
-            
-            return mem_mb
-            
-        except Exception as e:
-            logger.error(f"❌ Error checking memory: {e}")
-            return 0
-    
-    def _aggressive_memory_cleanup(self):
-        """Aggressive memory cleanup"""
-        try:
-            logger.info("🧹 Running memory cleanup...")
-            
-            self.cache.clear()
-            
-            try:
-                import tensorflow as tf
-                from keras import backend as K
-                K.clear_session()
-                tf.compat.v1.reset_default_graph()
-            except:
-                pass
-            
-            for _ in range(3):
-                gc.collect()
-            
-            time.sleep(1)
-            
-            mem_after = psutil.Process(os.getpid()).memory_info().rss / 1024 / 1024
-            logger.info(f"✅ Memory after cleanup: {mem_after:.0f}MB")
-            
-        except Exception as e:
-            logger.error(f"❌ Cleanup error: {e}")
-    
-    def initialize(self) -> bool:
-        """Initialize all components"""
-        try:
-            logger.info("\n" + "="*80)
-            logger.info("🚀 INITIALIZING SYSTEM")
-            logger.info("="*80)
-            
-            # Initialize Firebase
-            if not self._initialize_firebase():
+            if len(df_clean) < 500:
+                logger.error(f"❌ Insufficient data: {len(df_clean)} (need 500+)")
                 return False
             
-            # Initialize alert system
-            self.alert_manager = get_alert_manager(self.firebase)
+            # Prepare features
+            features = self.prepare_features(df_clean)
+            target = df_clean['price'].values
             
-            # Initialize models
-            if not self.initialize_models():
-                return False
+            # Scale data
+            scaled_features = self.feature_scaler.fit_transform(features)
+            scaled_target = self.price_scaler.fit_transform(
+                target.reshape(-1, 1)
+            ).flatten()
             
-            # Send startup alert
-            if self.alert_manager:
-                self.alert_manager.alert_system_startup()
+            # Time series split
+            tscv = TimeSeriesSplit(n_splits=3)
             
-            logger.info("\n✅ System initialized successfully!")
+            logger.info(f"📊 Using TimeSeriesSplit with 3 folds")
+            
+            # Train on last fold
+            splits = list(tscv.split(scaled_features))
+            train_idx, test_idx = splits[-1]
+            
+            # ================================================================
+            # LSTM TRAINING
+            # ================================================================
+            logger.info("\n🔵 Training LSTM...")
+            X_lstm, y_lstm = self.create_sequences(
+                scaled_features, 
+                scaled_target, 
+                self.sequence_length
+            )
+            
+            # Adjust indices for LSTM sequences
+            train_idx_lstm = train_idx[train_idx < len(X_lstm)]
+            test_idx_lstm = test_idx[test_idx < len(X_lstm)]
+            
+            X_train_lstm = X_lstm[train_idx_lstm]
+            X_test_lstm = X_lstm[test_idx_lstm]
+            y_train_lstm = y_lstm[train_idx_lstm]
+            y_test_lstm = y_lstm[test_idx_lstm]
+            
+            logger.info(f"   LSTM Train: {len(X_train_lstm)}, Test: {len(X_test_lstm)}")
+            
+            self.lstm_model = self.build_improved_lstm(
+                (self.sequence_length, len(self.feature_columns))
+            )
+            
+            # Callbacks
+            early_stop = EarlyStopping(
+                monitor='val_loss',
+                patience=MODEL_CONFIG['lstm']['patience'],
+                restore_best_weights=True,
+                verbose=1
+            )
+            
+            reduce_lr = ReduceLROnPlateau(
+                monitor='val_loss',
+                factor=0.5,
+                patience=5,
+                min_lr=0.00001,
+                verbose=1
+            )
+            
+            os.makedirs(MODEL_CONFIG['model_save_path'], exist_ok=True)
+            checkpoint = ModelCheckpoint(
+                f"{MODEL_CONFIG['model_save_path']}/lstm_best.keras",
+                monitor='val_loss',
+                save_best_only=True,
+                verbose=0
+            )
+            
+            # Train LSTM
+            history = self.lstm_model.fit(
+                X_train_lstm, y_train_lstm,
+                validation_data=(X_test_lstm, y_test_lstm),
+                epochs=epochs,
+                batch_size=batch_size,
+                callbacks=[early_stop, reduce_lr, checkpoint],
+                verbose=1
+            )
+            
+            # Evaluate LSTM
+            lstm_pred = self.lstm_model.predict(X_test_lstm, verbose=0)
+            y_test_original = self.price_scaler.inverse_transform(
+                y_test_lstm.reshape(-1, 1)
+            ).flatten()
+            lstm_pred_original = self.price_scaler.inverse_transform(lstm_pred).flatten()
+            
+            lstm_mae = mean_absolute_error(y_test_original, lstm_pred_original)
+            lstm_rmse = np.sqrt(mean_squared_error(y_test_original, lstm_pred_original))
+            lstm_mape = np.mean(np.abs((y_test_original - lstm_pred_original) / y_test_original)) * 100
+            
+            # Calculate directional accuracy for LSTM
+            lstm_direction_correct = np.mean(
+                np.sign(lstm_pred_original - y_test_original[:-1]) == 
+                np.sign(y_test_original[1:] - y_test_original[:-1])
+            ) * 100
+            
+            self.metrics['lstm'] = {
+                'mae': float(lstm_mae),
+                'rmse': float(lstm_rmse),
+                'mape': float(lstm_mape),
+                'direction_accuracy': float(lstm_direction_correct),
+                'final_val_loss': float(history.history['val_loss'][-1])
+            }
+            
+            logger.info(f"✅ LSTM - MAE: ${lstm_mae:,.2f}, RMSE: ${lstm_rmse:,.2f}, " +
+                       f"MAPE: {lstm_mape:.2f}%, Direction: {lstm_direction_correct:.1f}%")
+            
+            # ================================================================
+            # RANDOM FOREST TRAINING - FIXED
+            # ================================================================
+            logger.info("\n🌲 Training Random Forest...")
+            
+            # Create classification target (price going up or down)
+            y_direction = (df_clean['price'].shift(-1) > df_clean['price']).astype(int)
+            
+            # Remove last row (NaN from shift)
+            features_rf = scaled_features[:-1]
+            y_class = y_direction[:-1].values
+            
+            logger.info(f"   RF dataset size: {len(features_rf)} samples")
+            
+            # Create NEW split for RF data
+            tscv_rf = TimeSeriesSplit(n_splits=3)
+            splits_rf = list(tscv_rf.split(features_rf))
+            train_idx_rf, test_idx_rf = splits_rf[-1]
+            
+            X_train_rf = features_rf[train_idx_rf]
+            X_test_rf = features_rf[test_idx_rf]
+            y_train_rf = y_class[train_idx_rf]
+            y_test_rf = y_class[test_idx_rf]
+            
+            logger.info(f"   RF Train: {len(X_train_rf)}, Test: {len(X_test_rf)}")
+            
+            self.rf_model = RandomForestClassifier(
+                n_estimators=200,  # Increased from 150
+                max_depth=15,  # Increased from 12
+                min_samples_split=5,  # Decreased for more splits
+                min_samples_leaf=2,  # Added
+                max_features='sqrt',  # Better for high-dimensional data
+                random_state=42,
+                n_jobs=-1,
+                class_weight='balanced',
+                verbose=0
+            )
+            
+            self.rf_model.fit(X_train_rf, y_train_rf)
+            
+            # Evaluate RF
+            rf_pred = self.rf_model.predict(X_test_rf)
+            rf_proba = self.rf_model.predict_proba(X_test_rf)
+            rf_accuracy = accuracy_score(y_test_rf, rf_pred)
+            rf_avg_confidence = np.mean(np.max(rf_proba, axis=1)) * 100
+            
+            self.metrics['rf'] = {
+                'accuracy': float(rf_accuracy),
+                'avg_confidence': float(rf_avg_confidence),
+                'feature_importance_top': float(self.rf_model.feature_importances_.max())
+            }
+            
+            logger.info(f"✅ RF - Accuracy: {rf_accuracy:.2%}, Avg Confidence: {rf_avg_confidence:.1f}%")
+            
+            # ================================================================
+            # GRADIENT BOOSTING TRAINING - FIXED
+            # ================================================================
+            logger.info("\n🚀 Training Gradient Boosting...")
+            
+            # Use same split as RF
+            y_gb = scaled_target[:-1]
+            
+            X_train_gb = features_rf[train_idx_rf]
+            X_test_gb = features_rf[test_idx_rf]
+            y_train_gb = y_gb[train_idx_rf]
+            y_test_gb = y_gb[test_idx_rf]
+            
+            logger.info(f"   GB Train: {len(X_train_gb)}, Test: {len(X_test_gb)}")
+            
+            self.gb_model = GradientBoostingRegressor(
+                n_estimators=200,  # Increased from 150
+                learning_rate=0.1,  # Slightly higher
+                max_depth=6,  # Increased from 5
+                subsample=0.8,
+                min_samples_split=5,
+                min_samples_leaf=2,
+                max_features='sqrt',
+                random_state=42,
+                verbose=0
+            )
+            
+            self.gb_model.fit(X_train_gb, y_train_gb)
+            
+            # Evaluate GB
+            gb_pred_scaled = self.gb_model.predict(X_test_gb)
+            gb_pred = self.price_scaler.inverse_transform(
+                gb_pred_scaled.reshape(-1, 1)
+            ).flatten()
+            y_test_gb_original = self.price_scaler.inverse_transform(
+                y_test_gb.reshape(-1, 1)
+            ).flatten()
+            
+            gb_mae = mean_absolute_error(y_test_gb_original, gb_pred)
+            gb_rmse = np.sqrt(mean_squared_error(y_test_gb_original, gb_pred))
+            gb_mape = np.mean(np.abs((y_test_gb_original - gb_pred) / y_test_gb_original)) * 100
+            
+            # Calculate directional accuracy for GB
+            gb_direction_correct = np.mean(
+                np.sign(gb_pred - y_test_gb_original[:-1]) == 
+                np.sign(y_test_gb_original[1:] - y_test_gb_original[:-1])
+            ) * 100
+            
+            self.metrics['gb'] = {
+                'mae': float(gb_mae),
+                'rmse': float(gb_rmse),
+                'mape': float(gb_mape),
+                'direction_accuracy': float(gb_direction_correct)
+            }
+            
+            logger.info(f"✅ GB - MAE: ${gb_mae:,.2f}, RMSE: ${gb_rmse:,.2f}, " +
+                       f"MAPE: {gb_mape:.2f}%, Direction: {gb_direction_correct:.1f}%")
+            
+            # Mark as trained
+            self.is_trained = True
+            self.last_training = datetime.now()
+            
+            # Calculate overall ensemble accuracy
+            logger.info("\n📊 Overall Ensemble Performance:")
+            avg_direction_acc = (lstm_direction_correct + rf_accuracy * 100 + gb_direction_correct) / 3
+            logger.info(f"   Average Direction Accuracy: {avg_direction_acc:.1f}%")
+            
+            # Validate models
+            if MODEL_CONFIG.get('enable_model_validation'):
+                self._validate_models()
+            
+            # Save models
+            self.save_models()
+            
+            logger.info("\n✅ ALL MODELS TRAINED SUCCESSFULLY!")
+            
             return True
             
-        except Exception as e:
-            logger.error(f"❌ Initialization failed: {e}")
-            return False
-    
-    def _initialize_firebase(self) -> bool:
-        """Initialize Firebase with retry"""
-        max_retries = 5
-        
-        for attempt in range(max_retries):
-            try:
-                logger.info(f"🔗 Firebase connection attempt {attempt + 1}/{max_retries}...")
-                self.firebase = FirebaseManager()
-                
-                if self.firebase.connected:
-                    logger.info("✅ Firebase connected")
-                    self.heartbeat = HeartbeatManager(self.firebase, update_interval=30)
-                    self.heartbeat.send_status_change('starting', 'System initializing')
-                    return True
-                
-            except Exception as e:
-                logger.warning(f"⚠️ Firebase failed: {e}")
-                if attempt < max_retries - 1:
-                    time.sleep(5 * (2 ** attempt))
-        
-        logger.error("❌ Firebase connection failed")
-        if self.alert_manager:
-            self.alert_manager.alert_firebase_disconnected()
-        return False
-    
-    def initialize_models(self) -> bool:
-        """Initialize ML models"""
-        try:
-            logger.info("🔧 Initializing models...")
-            
-            self.predictor = ImprovedBitcoinPredictor()
-            
-            if self.heartbeat:
-                self.heartbeat.send_status_change('loading_models', 'Loading ML models')
-            
-            # Try to load existing models
-            if self.predictor.load_models():
-                logger.info("✅ Loaded existing models")
-                
-                if self.predictor.needs_retraining():
-                    logger.info("⚠️ Models need retraining...")
-                    return self.train_models()
-                
-                return True
-            else:
-                logger.info("📚 No models found, training new ones...")
-                return self.train_models()
-                
-        except Exception as e:
-            logger.error(f"❌ Model initialization error: {e}")
-            return False
-    
-    def train_models(self) -> bool:
-        """Train models"""
-        try:
-            logger.info(f"\n{'='*80}")
-            logger.info("🤖 TRAINING MODELS")
-            logger.info(f"{'='*80}")
-            
-            if self.heartbeat:
-                self.heartbeat.send_status_change('training', 'Training ML models')
-            
-            # Fetch training data
-            df = get_bitcoin_data_realtime(days=30, interval='hour')
-            
-            if df is None or len(df) < 500:
-                logger.error("❌ Insufficient training data")
-                if self.alert_manager:
-                    self.alert_manager.send_alert(
-                        "Training Data Insufficient",
-                        f"Only {len(df) if df is not None else 0} data points available",
-                        AlertSeverity.CRITICAL,
-                        "training_data"
-                    )
-                return False
-            
-            df = add_technical_indicators(df)
-            
-            mem_before = self._check_memory()
-            logger.info(f"Memory before training: {mem_before:.0f}MB")
-            
-            success = self.predictor.train_models(df, epochs=40, batch_size=64)
-            
-            mem_after = self._check_memory()
-            logger.info(f"Memory after training: {mem_after:.0f}MB")
-            
-            if success:
-                # Save metrics
-                if self.firebase and self.firebase.connected:
-                    self.firebase.save_model_performance(self.predictor.metrics)
-                
-                # Send alert
-                if self.alert_manager:
-                    self.alert_manager.alert_model_retrain(True, self.predictor.metrics)
-                
-                logger.info("✅ Training completed\n")
-                
-                if self.heartbeat:
-                    self.heartbeat.send_status_change('trained', 'Models trained')
-                
-                self._aggressive_memory_cleanup()
-                return True
-            else:
-                if self.alert_manager:
-                    self.alert_manager.alert_model_retrain(False)
-                return False
-                
         except Exception as e:
             logger.error(f"❌ Training error: {e}")
-            if self.alert_manager:
-                self.alert_manager.alert_model_retrain(False)
-            return False
-    
-    def _check_cooldown(self) -> bool:
-        """Check if system is in cooldown"""
-        if self.cooldown_until and datetime.now() < self.cooldown_until:
-            remaining = (self.cooldown_until - datetime.now()).total_seconds() / 60
-            logger.info(f"⏸️ In cooldown for {remaining:.1f} more minutes")
-            return True
-        return False
-    
-    def run_prediction_cycle(self):
-        """
-        Smart prediction cycle - only predict timeframes that are due
-        Each timeframe runs at its optimal interval
-        """
-        try:
-            self.watchdog.reset()
-            
-            # Check cooldown
-            if self._check_cooldown():
-                return
-            
-            now = datetime.now()
-            current_time = now.strftime('%H:%M:%S')
-            
-            logger.info(f"\n{'='*80}")
-            logger.info(f"🔮 PREDICTION CYCLE - {now.strftime('%Y-%m-%d %H:%M:%S')}")
-            logger.info(f"{'='*80}")
-            
-            # Check memory
-            mem_mb = self._check_memory()
-            logger.info(f"💾 Memory: {mem_mb:.0f}MB")
-            
-            # Send heartbeat
-            if self.heartbeat:
-                self.heartbeat.send_heartbeat({
-                    'last_activity': 'running_predictions',
-                    'total_predictions': self.total_predictions,
-                    'memory_mb': mem_mb
-                })
-            
-            # Validate predictor
-            if not self.predictor or not self.predictor.is_trained:
-                logger.error("❌ Predictor not ready")
-                self.consecutive_failures += 1
-                
-                if self.consecutive_failures >= 3:
-                    if self.alert_manager:
-                        self.alert_manager.alert_consecutive_failures(self.consecutive_failures)
-                    self.initialize_models()
-                
-                return
-            
-            # Get current price
-            current_price = get_current_btc_price()
-            if current_price:
-                logger.info(f"💰 BTC: ${current_price:,.2f}")
-            
-            # Check which timeframes should predict now
-            timeframes_to_predict = []
-            
-            for tf, scheduler in self.timeframe_schedulers.items():
-                if scheduler.should_predict_now():
-                    timeframes_to_predict.append(tf)
-            
-            if not timeframes_to_predict:
-                logger.info("⏭️ No timeframes scheduled for this cycle")
-                logger.info(f"{'='*80}\n")
-                return
-            
-            logger.info(f"\n📋 Timeframes scheduled for prediction:")
-            for tf in timeframes_to_predict:
-                label = get_timeframe_label(tf)
-                category = self.timeframe_schedulers[tf].category
-                logger.info(f"   • {label:8} ({category})")
-            
-            # Run predictions for scheduled timeframes
-            predictions_made = 0
-            
-            for tf in timeframes_to_predict:
-                try:
-                    self.watchdog.reset()
-                    
-                    scheduler = self.timeframe_schedulers[tf]
-                    label = get_timeframe_label(tf)
-                    category = scheduler.category
-                    
-                    logger.info(f"\n{'─'*80}")
-                    logger.info(f"⏱️ {label} ({category.upper()})")
-                    logger.info(f"{'─'*80}")
-                    
-                    # Get independent data for this timeframe
-                    df = scheduler.get_independent_data()
-                    
-                    if df is None:
-                        logger.warning(f"⚠️ Skipped - no data available")
-                        continue
-                    
-                    # Update predictor with recent accuracy
-                    if self.recent_accuracy is not None:
-                        self.predictor.recent_accuracy = self.recent_accuracy
-                    
-                    # Make prediction
-                    logger.info(f"🧠 Analyzing with {len(df)} data points...")
-                    prediction = self.predictor.predict(df, tf)
-                    
-                    if prediction:
-                        self._display_prediction(prediction)
-                        
-                        # Save to Firebase
-                        if self.firebase and self.firebase.connected:
-                            doc_id = self.firebase.save_prediction(prediction)
-                            
-                            if doc_id:
-                                scheduler.mark_prediction_made()
-                                predictions_made += 1
-                                self.successful_predictions += 1
-                                self.last_successful_prediction = datetime.now()
-                                self.consecutive_failures = 0
-                                logger.info(f"✅ Saved: {doc_id}")
-                                
-                                # Show next prediction time
-                                next_time = scheduler.get_next_prediction_time()
-                                logger.info(f"⏭️ Next prediction: {next_time.strftime('%H:%M')}")
-                            else:
-                                self.failed_predictions += 1
-                    else:
-                        logger.info(f"⭕ Skipped (low confidence)")
-                        
-                except Exception as e:
-                    logger.error(f"❌ Error predicting {get_timeframe_label(tf)}: {e}")
-                    self.failed_predictions += 1
-                    continue
-            
-            self.total_predictions += predictions_made
-            
-            # Check for stagnation
-            if self.last_successful_prediction:
-                time_since = (datetime.now() - self.last_successful_prediction).total_seconds()
-                if time_since > 600:
-                    logger.error(f"❌ No successful predictions for {time_since:.0f}s")
-                    if self.alert_manager:
-                        self.alert_manager.send_alert(
-                            "System Stagnant",
-                            f"No predictions for {time_since/60:.1f} minutes",
-                            AlertSeverity.CRITICAL,
-                            "stagnant"
-                        )
-            
-            logger.info(f"\n{'='*80}")
-            logger.info(f"✅ Cycle complete - {predictions_made} predictions made")
-            logger.info(f"📊 Success: {self.successful_predictions}/{self.total_predictions}")
-            logger.info(f"{'='*80}\n")
-            
-            # Periodic cleanup
-            if self.total_predictions % 10 == 0:
-                self._aggressive_memory_cleanup()
-            
-            self.watchdog.reset()
-            
-        except Exception as e:
-            logger.error(f"❌ CRITICAL ERROR in prediction cycle: {e}")
             import traceback
             traceback.print_exc()
-            self.consecutive_failures += 1
-            
-            if self.consecutive_failures >= 3:
-                if self.alert_manager:
-                    self.alert_manager.alert_consecutive_failures(self.consecutive_failures)
+            return False
     
-    def _display_prediction(self, prediction: Dict):
-        """Display prediction summary"""
-        arrow = "🟢 ↗️" if prediction['price_change'] > 0 else "🔴 ↘️"
-        label = get_timeframe_label(prediction['timeframe_minutes'])
-        logger.info(f"   {arrow} ${prediction['predicted_price']:,.2f} "
-                   f"({prediction['price_change_pct']:+.2f}%) - "
-                   f"Confidence: {prediction['confidence']:.1f}%")
+    def _validate_models(self):
+        """Validate model quality"""
+        logger.info("\n🔍 Validating model quality...")
+        
+        min_score = MODEL_CONFIG.get('min_validation_score', 0.6)
+        
+        # Check LSTM
+        if 'lstm' in self.metrics:
+            lstm_valid = self.metrics['lstm']['direction_accuracy'] > 50
+            logger.info(f"{'✅' if lstm_valid else '⚠️'} LSTM: Direction {self.metrics['lstm']['direction_accuracy']:.1f}%")
+        
+        # Check RF
+        if 'rf' in self.metrics:
+            rf_valid = self.metrics['rf']['accuracy'] > min_score
+            logger.info(f"{'✅' if rf_valid else '⚠️'} RF: Accuracy {self.metrics['rf']['accuracy']:.2%}")
+        
+        # Check GB
+        if 'gb' in self.metrics:
+            gb_valid = self.metrics['gb']['direction_accuracy'] > 50
+            logger.info(f"{'✅' if gb_valid else '⚠️'} GB: Direction {self.metrics['gb']['direction_accuracy']:.1f}%")
     
-    def validate_predictions(self):
-        """Validate predictions"""
+    def predict(self, df: pd.DataFrame, timeframe_minutes: int) -> Optional[Dict]:
+        """
+        IMPROVED: Better prediction with adaptive confidence
+        """
+        
+        if not self.is_trained:
+            logger.warning("⚠️ Models not trained")
+            return None
+        
         try:
-            self.watchdog.reset()
+            category = get_timeframe_category(timeframe_minutes)
             
-            if not self.firebase or not self.firebase.connected:
-                return
+            # Get appropriate sequence length
+            seq_length_map = {
+                'ultra_short': MODEL_CONFIG['lstm']['ultra_short_sequence'],
+                'short': MODEL_CONFIG['lstm']['short_sequence'],
+                'medium': MODEL_CONFIG['lstm']['medium_sequence'],
+                'long': MODEL_CONFIG['lstm']['long_sequence']
+            }
+            sequence_length = seq_length_map.get(category, self.sequence_length)
             
-            predictions = self.firebase.get_unvalidated_predictions()
+            # Prepare data
+            df_clean = df.dropna().copy()
+            df_clean = df_clean.sort_values('datetime', ascending=True).reset_index(drop=True)
             
-            if not predictions:
-                return
+            min_required = sequence_length + 20
+            if len(df_clean) < min_required:
+                logger.warning(f"⚠️ Insufficient data: {len(df_clean)} < {min_required}")
+                return None
             
-            current_price = get_current_btc_price()
-            if not current_price:
-                return
+            # Prepare features
+            features = self.prepare_features(df_clean)
+            scaled_features = self.feature_scaler.transform(features)
             
-            validated_count = 0
-            wins = 0
-            losses = 0
+            current_price = df_clean.iloc[-1]['price']
             
-            for pred in predictions:
-                try:
-                    result = self.firebase.validate_prediction(
-                        pred['doc_id'],
-                        current_price,
-                        pred['predicted_price'],
-                        pred['current_price'],
-                        pred['trend']
-                    )
-                    
-                    if result:
-                        validated_count += 1
-                        
-                        is_win = 'WIN' in str(pred.get('validation_result', '')).upper()
-                        self.recent_results.append(is_win)
-                        
-                        if len(self.recent_results) > 100:
-                            self.recent_results.pop(0)
-                        
-                        if is_win:
-                            wins += 1
-                            self.loss_streak = 0
-                        else:
-                            losses += 1
-                            self.loss_streak += 1
-                        
-                except Exception as e:
-                    logger.error(f"❌ Validation error: {e}")
-                    continue
+            # ================================================================
+            # MODEL PREDICTIONS
+            # ================================================================
             
-            if validated_count > 0:
-                logger.info(f"✅ Validated {validated_count} predictions ({wins}W/{losses}L)")
-                
-                if len(self.recent_results) >= 10:
-                    self.recent_accuracy = sum(self.recent_results) / len(self.recent_results) * 100
-                
-                max_streak = STRATEGY_CONFIG['risk_management']['cooldown_after_loss_streak']
-                if self.loss_streak >= max_streak:
-                    cooldown_min = STRATEGY_CONFIG['risk_management']['cooldown_duration_minutes']
-                    self.cooldown_until = datetime.now() + timedelta(minutes=cooldown_min)
-                    logger.warning(f"⏸️ Entering cooldown for {cooldown_min} minutes after {self.loss_streak} losses")
-                
-                self.update_statistics()
+            # LSTM prediction
+            lstm_input = scaled_features[-sequence_length:].reshape(1, sequence_length, -1)
+            lstm_pred_scaled = self.lstm_model.predict(lstm_input, verbose=0)[0][0]
+            lstm_pred = self.price_scaler.inverse_transform([[lstm_pred_scaled]])[0][0]
             
-            self.watchdog.reset()
+            # RF prediction
+            rf_input = scaled_features[-1:].reshape(1, -1)
+            rf_direction = self.rf_model.predict(rf_input)[0]
+            rf_proba = self.rf_model.predict_proba(rf_input)[0]
+            rf_confidence = max(rf_proba) * 100
+            
+            # GB prediction
+            gb_pred_scaled = self.gb_model.predict(rf_input)[0]
+            gb_pred = self.price_scaler.inverse_transform([[gb_pred_scaled]])[0][0]
+            
+            # ================================================================
+            # CALCULATE TIME ADJUSTMENT
+            # ================================================================
+            time_factor = self._calculate_time_factor(timeframe_minutes, category)
+            
+            # Calculate predicted changes
+            lstm_change = (lstm_pred - current_price) * time_factor
+            gb_change = (gb_pred - current_price) * time_factor
+            
+            # ================================================================
+            # IMPROVED ENSEMBLE
+            # ================================================================
+            weights = self._get_ensemble_weights(category)
+            
+            # Base ensemble
+            base_ensemble = (
+                weights['lstm'] * lstm_change +
+                weights['gb'] * gb_change
+            )
+            
+            # RF adjustment (stronger influence)
+            rf_adjustment = 1.0
+            if rf_direction == 1:  # UP
+                rf_adjustment = 1.0 + (rf_confidence - 50) / 150  # Max +33%
+            else:  # DOWN
+                rf_adjustment = 1.0 - (rf_confidence - 50) / 150  # Max -33%
+            
+            ensemble_change = base_ensemble * rf_adjustment
+            
+            # Apply trend strength from recent data
+            trend_multiplier = self._calculate_trend_strength(df_clean)
+            ensemble_change *= trend_multiplier
+            
+            predicted_price = current_price + ensemble_change
+            
+            # ================================================================
+            # IMPROVED CONFIDENCE CALCULATION
+            # ================================================================
+            confidence = self._calculate_improved_confidence(
+                lstm_change, gb_change, rf_direction, rf_confidence,
+                category, df_clean, timeframe_minutes
+            )
+            
+            # ADAPTIVE THRESHOLD: Lower for more predictions
+            min_confidence = self._get_adaptive_confidence_threshold(
+                timeframe_minutes, category
+            )
+            
+            if confidence < min_confidence:
+                logger.debug(f"⚠️ Confidence {confidence:.1f}% below adaptive threshold {min_confidence:.1f}%")
+                return None
+            
+            # ================================================================
+            # DETERMINE TREND
+            # ================================================================
+            trend = "CALL (Bullish)" if ensemble_change > 0 else "PUT (Bearish)"
+            
+            # ================================================================
+            # CALCULATE PRICE RANGE
+            # ================================================================
+            volatility = df_clean['price'].tail(20).std()
+            range_multiplier = self._get_range_multiplier(category, time_factor)
+            
+            price_range_low = predicted_price - volatility * range_multiplier
+            price_range_high = predicted_price + volatility * range_multiplier
+            
+            # ================================================================
+            # MODEL AGREEMENT SCORE
+            # ================================================================
+            lstm_dir = 1 if lstm_change > 0 else 0
+            gb_dir = 1 if gb_change > 0 else 0
+            
+            agreement_count = sum([
+                lstm_dir == rf_direction,
+                gb_dir == rf_direction,
+                lstm_dir == gb_dir
+            ])
+            
+            model_agreement = agreement_count / 3.0
+            
+            # ================================================================
+            # RETURN PREDICTION
+            # ================================================================
+            prediction = {
+                'current_price': current_price,
+                'predicted_price': predicted_price,
+                'price_change': ensemble_change,
+                'price_change_pct': (ensemble_change / current_price) * 100,
+                'price_range_low': price_range_low,
+                'price_range_high': price_range_high,
+                'trend': trend,
+                'confidence': confidence,
+                'lstm_prediction': lstm_pred,
+                'gb_prediction': gb_pred,
+                'rf_direction': 'UP' if rf_direction == 1 else 'DOWN',
+                'rf_confidence': rf_confidence,
+                'model_agreement': model_agreement * 100,
+                'timeframe_minutes': timeframe_minutes,
+                'volatility': volatility,
+                'method': f'Improved ML Ensemble ({category})',
+                'model_metrics': self.metrics,
+                'category': category,
+                'time_factor': time_factor,
+                'sequence_length_used': sequence_length,
+                'trend_strength': trend_multiplier,
+                'adaptive_threshold': min_confidence
+            }
+            
+            # Track prediction for adaptive learning
+            self._track_prediction(prediction)
+            
+            return prediction
             
         except Exception as e:
-            logger.error(f"❌ Validation cycle error: {e}")
+            logger.error(f"❌ Prediction error: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
     
-    def update_statistics(self):
-        """Update statistics"""
+    def _calculate_time_factor(self, timeframe_minutes: int, category: str) -> float:
+        """
+        IMPROVED: Better time adjustment
+        """
+        if category == 'ultra_short':
+            return min(timeframe_minutes / 30, 0.7)  # More conservative
+        elif category == 'short':
+            return min(timeframe_minutes / 60, 1.0)
+        elif category == 'medium':
+            return min(timeframe_minutes / 240, 1.3)
+        else:  # long
+            return min(timeframe_minutes / 1440, 1.8)
+    
+    def _get_ensemble_weights(self, category: str) -> Dict[str, float]:
+        """
+        IMPROVED: Better weight distribution
+        """
+        weights = {
+            'ultra_short': {'lstm': 0.35, 'gb': 0.35, 'rf': 0.30},  # RF more important for short term
+            'short': {'lstm': 0.40, 'gb': 0.35, 'rf': 0.25},
+            'medium': {'lstm': 0.45, 'gb': 0.40, 'rf': 0.15},
+            'long': {'lstm': 0.50, 'gb': 0.40, 'rf': 0.10}  # LSTM better for long term
+        }
+        return weights.get(category, {'lstm': 0.40, 'gb': 0.35, 'rf': 0.25})
+    
+    def _calculate_trend_strength(self, df: pd.DataFrame) -> float:
+        """
+        NEW: Calculate current trend strength to adjust predictions
+        """
         try:
-            if not self.firebase or not self.firebase.connected:
-                return
+            recent = df.tail(20)
             
-            overall_stats = self.firebase.get_statistics(days=7)
+            # Price momentum
+            price_change = (recent.iloc[-1]['price'] - recent.iloc[0]['price']) / recent.iloc[0]['price']
+            momentum = abs(price_change) * 100
             
-            if overall_stats and overall_stats.get('total_predictions', 0) > 0:
-                self.firebase.save_statistics(overall_stats)
+            # RSI trend
+            rsi = recent['rsi'].iloc[-1] if 'rsi' in recent.columns else 50
+            rsi_strength = abs(rsi - 50) / 50  # 0 to 1
+            
+            # Volume trend
+            volume_ratio = recent['volume_ratio'].iloc[-1] if 'volume_ratio' in recent.columns else 1.0
+            volume_strength = min(volume_ratio, 2.0) / 2.0  # Cap at 2.0
+            
+            # Combined strength
+            trend_strength = (momentum / 5.0 + rsi_strength + volume_strength) / 3
+            
+            # Convert to multiplier (0.9 to 1.1)
+            multiplier = 0.9 + (trend_strength * 0.2)
+            
+            return multiplier
+            
+        except:
+            return 1.0
+    
+    def _calculate_improved_confidence(self, lstm_change: float, gb_change: float,
+                                      rf_direction: int, rf_confidence: float,
+                                      category: str, df: pd.DataFrame,
+                                      timeframe_minutes: int) -> float:
+        """
+        IMPROVED: Better confidence calculation with adaptive adjustments
+        """
+        
+        # Base confidence - LOWER to allow more predictions
+        base_confidence = {
+            'ultra_short': 35,  # Lowered from 40
+            'short': 40,        # Lowered from 45
+            'medium': 45,       # Lowered from 50
+            'long': 50          # Lowered from 55
+        }.get(category, 40)
+        
+        # ================================================================
+        # MODEL AGREEMENT (up to +30)
+        # ================================================================
+        lstm_dir = 1 if lstm_change > 0 else 0
+        gb_dir = 1 if gb_change > 0 else 0
+        
+        agreement_score = 0
+        if lstm_dir == gb_dir == rf_direction:
+            agreement_score = 30  # All agree - INCREASED from 25
+        elif (lstm_dir == gb_dir) or (lstm_dir == rf_direction) or (gb_dir == rf_direction):
+            agreement_score = 18  # 2 out of 3 - INCREASED from 15
+        else:
+            agreement_score = 5   # Disagree but still give some credit
+        
+        # ================================================================
+        # RF CONFIDENCE (up to +15)
+        # ================================================================
+        rf_contribution = (rf_confidence - 50) * 0.3  # Max +15
+        
+        # ================================================================
+        # MAGNITUDE AGREEMENT (up to +10)
+        # ================================================================
+        # Check if predicted change magnitudes are similar
+        if abs(lstm_change) > 0 and abs(gb_change) > 0:
+            magnitude_ratio = min(abs(lstm_change), abs(gb_change)) / max(abs(lstm_change), abs(gb_change))
+            magnitude_score = magnitude_ratio * 10
+        else:
+            magnitude_score = 0
+        
+        # ================================================================
+        # RECENT PERFORMANCE (up to +10)
+        # ================================================================
+        performance_bonus = 0
+        if hasattr(self, 'recent_accuracy') and self.recent_accuracy:
+            performance_bonus = (self.recent_accuracy - 50) * 0.2  # Max +10
+        
+        # ================================================================
+        # MARKET CONDITIONS (up to +10)
+        # ================================================================
+        market_bonus = self._assess_market_conditions(df)
+        
+        # ================================================================
+        # VOLATILITY ADJUSTMENT (up to +5)
+        # ================================================================
+        volatility_bonus = self._assess_volatility_confidence(df, category)
+        
+        # ================================================================
+        # CALCULATE FINAL CONFIDENCE
+        # ================================================================
+        confidence = (base_confidence + agreement_score + rf_contribution + 
+                     magnitude_score + performance_bonus + market_bonus + volatility_bonus)
+        
+        # Cap confidence by category
+        max_confidence = {
+            'ultra_short': 80,  # Increased from 75
+            'short': 85,        # Increased from 80
+            'medium': 90,       # Increased from 85
+            'long': 92          # Increased from 90
+        }.get(category, 85)
+        
+        return min(confidence, max_confidence)
+    
+    def _get_adaptive_confidence_threshold(self, timeframe_minutes: int, category: str) -> float:
+        """
+        NEW: Adaptive confidence threshold based on recent performance
+        """
+        # Base threshold - LOWERED for more predictions
+        base_threshold = {
+            'ultra_short': 45,  # Lowered from 60
+            'short': 40,        # Lowered from 50
+            'medium': 38,       # Lowered from 45
+            'long': 35          # Lowered from 40
+        }.get(category, 40)
+        
+        # Adjust based on recent win rate
+        if hasattr(self, 'recent_accuracy') and self.recent_accuracy is not None:
+            if self.recent_accuracy > 60:
+                # Performing well - can be slightly more selective
+                base_threshold += 3
+            elif self.recent_accuracy < 45:
+                # Performing poorly - be more selective
+                base_threshold += 5
+            # else: normal range (45-60%), use base threshold
+        
+        return base_threshold
+    
+    def _assess_market_conditions(self, df: pd.DataFrame) -> float:
+        """
+        IMPROVED: Better market condition assessment
+        """
+        try:
+            recent_data = df.tail(20)
+            
+            # Trend strength
+            price_change = (recent_data.iloc[-1]['price'] - recent_data.iloc[0]['price']) / recent_data.iloc[0]['price']
+            trend_strength = abs(price_change) * 100
+            
+            # Volatility
+            volatility = recent_data['price'].std() / recent_data['price'].mean() * 100
+            
+            # RSI
+            rsi = recent_data['rsi'].iloc[-1] if 'rsi' in recent_data.columns else 50
+            
+            # Volume
+            volume_ratio = recent_data['volume_ratio'].iloc[-1] if 'volume_ratio' in recent_data.columns else 1.0
+            
+            bonus = 0
+            
+            # Strong trend + normal volatility + good volume = +10
+            if trend_strength > 2 and 1 < volatility < 4 and volume_ratio > 1.2:
+                bonus = 10
+            # Moderate trend + low volatility = +7
+            elif trend_strength > 1 and volatility < 3:
+                bonus = 7
+            # Low volatility = +5
+            elif volatility < 2:
+                bonus = 5
+            # High volatility = -3
+            elif volatility > 6:
+                bonus = -3
+            # Very high volatility = -8
+            elif volatility > 8:
+                bonus = -8
+            
+            # RSI extremes add confidence
+            if rsi < 30 or rsi > 70:
+                bonus += 3
+            
+            return bonus
+            
+        except:
+            return 0
+    
+    def _assess_volatility_confidence(self, df: pd.DataFrame, category: str) -> float:
+        """
+        NEW: Assess if volatility suits the timeframe
+        """
+        try:
+            recent = df.tail(20)
+            volatility = recent['price'].std() / recent['price'].mean() * 100
+            
+            # Different timeframes prefer different volatility levels
+            if category == 'ultra_short':
+                # Ultra short likes medium volatility
+                if 2 < volatility < 5:
+                    return 5
+                elif volatility > 6:
+                    return -3
+            elif category == 'short':
+                # Short likes medium-high volatility
+                if 2 < volatility < 6:
+                    return 5
+            elif category in ['medium', 'long']:
+                # Medium/long prefers lower volatility
+                if volatility < 3:
+                    return 5
+                elif volatility > 5:
+                    return -2
+            
+            return 0
+            
+        except:
+            return 0
+    
+    def _get_range_multiplier(self, category: str, time_factor: float) -> float:
+        """
+        IMPROVED: Better range calculation
+        """
+        base_multiplier = {
+            'ultra_short': 0.5,  # Slightly wider
+            'short': 0.7,
+            'medium': 0.9,
+            'long': 1.2
+        }.get(category, 0.7)
+        
+        return base_multiplier * time_factor * 0.8  # Slightly tighter ranges
+    
+    def _track_prediction(self, prediction: Dict):
+        """
+        NEW: Track predictions for adaptive learning
+        """
+        try:
+            self.prediction_history.append({
+                'timestamp': datetime.now(),
+                'confidence': prediction['confidence'],
+                'category': prediction['category'],
+                'trend': prediction['trend']
+            })
+            
+            # Keep only recent history
+            if len(self.prediction_history) > self.max_history:
+                self.prediction_history = self.prediction_history[-self.max_history:]
                 
-                win_rate = overall_stats.get('win_rate', 0)
-                if self.alert_manager:
-                    self.alert_manager.alert_low_winrate(win_rate, "Overall")
-                
-                for tf in PREDICTION_CONFIG['active_timeframes']:
-                    tf_stats = self.firebase.get_statistics(timeframe_minutes=tf, days=7)
-                    if tf_stats and tf_stats.get('total_predictions', 0) >= 10:
-                        tf_winrate = tf_stats.get('win_rate', 0)
-                        label = get_timeframe_label(tf)
-                        
-                        if self.alert_manager:
-                            self.alert_manager.alert_low_winrate(tf_winrate, label)
-                        
-                        if tf_winrate >= 65:
-                            if self.alert_manager:
-                                self.alert_manager.alert_good_performance(label, tf_winrate)
+        except:
+            pass
+    
+    def save_models(self) -> bool:
+        """Save trained models"""
+        try:
+            path = MODEL_CONFIG['model_save_path']
+            os.makedirs(path, exist_ok=True)
+            
+            if self.lstm_model:
+                self.lstm_model.save(f'{path}/lstm_model.keras')
+            
+            if self.rf_model:
+                with open(f'{path}/rf_model.pkl', 'wb') as f:
+                    pickle.dump(self.rf_model, f)
+            
+            if self.gb_model:
+                with open(f'{path}/gb_model.pkl', 'wb') as f:
+                    pickle.dump(self.gb_model, f)
+            
+            with open(f'{path}/scalers.pkl', 'wb') as f:
+                pickle.dump({
+                    'price_scaler': self.price_scaler,
+                    'feature_scaler': self.feature_scaler,
+                    'feature_columns': self.feature_columns,
+                    'metrics': self.metrics,
+                    'last_training': self.last_training,
+                    'validation_scores': self.validation_scores,
+                    'prediction_history': self.prediction_history
+                }, f)
+            
+            logger.info(f"✅ Models saved to {path}/")
+            return True
             
         except Exception as e:
-            logger.error(f"❌ Stats update error: {e}")
+            logger.error(f"❌ Error saving models: {e}")
+            return False
     
-    def periodic_health_check(self):
-        """Periodic health check"""
+    def load_models(self) -> bool:
+        """Load trained models"""
         try:
-            self.watchdog.reset()
+            path = MODEL_CONFIG['model_save_path']
             
-            logger.info("\n🏥 HEALTH CHECK")
+            if not os.path.exists(f'{path}/lstm_model.keras'):
+                logger.warning("⚠️ Models not found")
+                return False
             
-            mem_mb = self._check_memory()
+            self.lstm_model = load_model(f'{path}/lstm_model.keras')
             
-            from system_health import monitor_health
-            report = monitor_health(self.firebase if self.firebase and self.firebase.connected else None)
+            with open(f'{path}/rf_model.pkl', 'rb') as f:
+                self.rf_model = pickle.load(f)
             
-            if self.heartbeat:
-                self.heartbeat.send_heartbeat({
-                    'health_status': report['overall_status'],
-                    'memory_mb': mem_mb,
-                    'total_predictions': self.total_predictions
-                })
+            with open(f'{path}/gb_model.pkl', 'rb') as f:
+                self.gb_model = pickle.load(f)
             
-            import shutil
-            total, used, free = shutil.disk_usage("/")
-            free_gb = free / (1024**3)
+            with open(f'{path}/scalers.pkl', 'rb') as f:
+                data = pickle.load(f)
+                self.price_scaler = data['price_scaler']
+                self.feature_scaler = data['feature_scaler']
+                self.feature_columns = data['feature_columns']
+                self.metrics = data.get('metrics', {})
+                self.last_training = data.get('last_training')
+                self.validation_scores = data.get('validation_scores', {})
+                self.prediction_history = data.get('prediction_history', [])
             
-            if free_gb < 1.0 and self.alert_manager:
-                self.alert_manager.alert_disk_space_low(free_gb)
+            self.is_trained = True
+            logger.info(f"✅ Models loaded from {path}/")
             
-            if report['overall_status'] == 'CRITICAL':
-                logger.error("❌ System critical")
-                if self.alert_manager:
-                    self.alert_manager.send_alert(
-                        "System Health Critical",
-                        "System health is critical. Check immediately.",
-                        AlertSeverity.CRITICAL,
-                        "health_critical"
-                    )
-            
-            self.watchdog.reset()
+            return True
             
         except Exception as e:
-            logger.error(f"❌ Health check error: {e}")
+            logger.error(f"❌ Error loading models: {e}")
+            return False
     
-    def start(self):
-        """Start scheduler"""
-        logger.info(f"\n{'='*80}")
-        logger.info("🚀 STARTING BITCOIN PREDICTOR (SMART SCHEDULING)")
-        logger.info(f"{'='*80}")
-        logger.info(f"Environment: {os.getenv('ENVIRONMENT', 'development')}")
-        logger.info(f"Trading Mode: {os.getenv('TRADING_MODE', 'paper')}")
-        logger.info(f"{'='*80}\n")
+    def needs_retraining(self) -> bool:
+        """Check if models need retraining"""
+        if not self.is_trained or not self.last_training:
+            return True
         
-        self.start_memory = psutil.Process(os.getpid()).memory_info().rss / 1024 / 1024
-        logger.info(f"💾 Starting memory: {self.start_memory:.0f}MB")
-        
-        self.watchdog.start()
-        
-        if not self.initialize():
-            logger.error("❌ Initialization failed")
-            return
-        
-        logger.info("\n📅 System will check every minute for scheduled predictions")
-        logger.info("   • Validation: Every 60 seconds")
-        logger.info("   • Health: Every 5 minutes")
-        logger.info("   • Heartbeat: Every 30 seconds")
-        logger.info("   • Statistics: Every 10 minutes\n")
-        
-        # Initial run
-        logger.info("🎯 Running initial prediction cycle...")
-        self.run_prediction_cycle()
-        self.periodic_health_check()
-        
-        if self.heartbeat:
-            self.heartbeat.send_status_change('running', 'System operational')
-        
-        self.is_running = True
-        logger.info("\n✅ System started!\n")
-        
-        # Main loop - check every minute
-        last_validation = time.time()
-        last_health = time.time()
-        last_heartbeat = time.time()
-        last_stats = time.time()
-        
-        while self.is_running:
-            try:
-                current_time = time.time()
-                
-                # Heartbeat every 30 seconds
-                if current_time - last_heartbeat >= 30:
-                    if self.heartbeat:
-                        self.heartbeat.send_heartbeat({
-                            'status': 'running',
-                            'predictions': self.total_predictions
-                        })
-                    last_heartbeat = current_time
-                
-                # Validation every 60 seconds
-                if current_time - last_validation >= 60:
-                    self.validate_predictions()
-                    last_validation = current_time
-                
-                # Health check every 5 minutes
-                if current_time - last_health >= 300:
-                    self.periodic_health_check()
-                    last_health = current_time
-                
-                # Statistics every 10 minutes
-                if current_time - last_stats >= 600:
-                    self.update_statistics()
-                    last_stats = current_time
-                
-                # Check for predictions every minute
-                self.run_prediction_cycle()
-                
-                # Sleep until next minute boundary
-                now = datetime.now()
-                sleep_seconds = 60 - now.second
-                time.sleep(sleep_seconds)
-                
-            except KeyboardInterrupt:
-                logger.info("\n⚠️ Shutdown requested...")
-                break
-            except Exception as e:
-                logger.error(f"\n❌ Main loop error: {e}")
-                import traceback
-                traceback.print_exc()
-                time.sleep(5)
-        
-        self.stop()
-    
-    def stop(self):
-        """Stop scheduler"""
-        logger.info("🛑 Stopping...")
-        self.is_running = False
-        
-        if self.watchdog:
-            self.watchdog.stop()
-        
-        if self.heartbeat:
-            self.heartbeat.send_shutdown_signal()
-        
-        logger.info("✅ Stopped\n")
+        time_since_training = (datetime.now() - self.last_training).total_seconds()
+        return time_since_training > MODEL_CONFIG['auto_retrain_interval']
 
 
-def main():
-    """Main entry point"""
-    try:
-        from config import validate_environment
-        validate_environment()
-        
-        scheduler = ImprovedScheduler()
-        scheduler.start()
-        
-    except KeyboardInterrupt:
-        logger.info("\n\n❌ Interrupted")
-    except EnvironmentError as e:
-        logger.error(f"\n❌ Environment error: {e}")
-        logger.error("Please check your .env file and configuration.")
-        sys.exit(1)
-    except Exception as e:
-        logger.error(f"\n❌ Fatal error: {e}")
-        import traceback
-        traceback.print_exc()
-        sys.exit(1)
+# ============================================================================
+# COMPATIBILITY ALIAS
+# ============================================================================
 
-
-if __name__ == "__main__":
-    main()
+BitcoinMLPredictor = ImprovedBitcoinPredictor

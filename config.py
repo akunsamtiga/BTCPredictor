@@ -1,6 +1,9 @@
 """
-FIXED Configuration - NO BACKTEST
-Simplified and focused configuration
+IMPROVED Configuration
+CHANGES:
+1. Lower confidence thresholds for more predictions
+2. Better timeframe distribution
+3. Optimized data requirements
 """
 
 import os
@@ -36,52 +39,53 @@ FIREBASE_CONFIG = {
     'connection_timeout': 30
 }
 
-# Prediction Configuration - SIMPLIFIED
+# IMPROVED: Prediction Configuration
 PREDICTION_CONFIG = {
-    # Timeframes (minutes) - REDUCED for better accuracy
-    'ultra_short_timeframes': [5, 10],
-    'short_timeframes': [15, 30, 60],
-    'medium_timeframes': [120, 240, 720],
-    'long_timeframes': [1440, 2880],
+    # Timeframes (minutes) - OPTIMIZED
+    'ultra_short_timeframes': [5, 10, 15],  # Added 15
+    'short_timeframes': [30, 60],  # Simplified
+    'medium_timeframes': [120, 240, 480],  # Added 480 (8h)
+    'long_timeframes': [720, 1440],  # Removed 2880 (too long)
     
-    # Active timeframes - FOCUSED on reliable ones
+    # Active timeframes - MORE FOCUSED
     'active_timeframes': [
-        15, 30, 60,      # Short term
-        240, 720,        # Medium term
-        1440             # Long term
+        5, 15, 30,       # Ultra short & short
+        60, 120,         # Short & medium
+        240, 720,        # Medium & long
+        1440             # Daily
     ],
     
-    'priority_timeframes': [60, 240, 1440],
+    'priority_timeframes': [15, 60, 240, 1440],  # Added 15min
     
-    # Minimum confidence thresholds - MORE STRICT
+    # LOWERED: Minimum confidence thresholds for more predictions
     'min_confidence': {
-        'ultra_short': int(os.getenv('MIN_CONFIDENCE_ULTRA_SHORT', 70)),
-        'short': int(os.getenv('MIN_CONFIDENCE_SHORT', 60)),
-        'medium': int(os.getenv('MIN_CONFIDENCE_MEDIUM', 55)),
-        'long': int(os.getenv('MIN_CONFIDENCE_LONG', 50))
+        'ultra_short': int(os.getenv('MIN_CONFIDENCE_ULTRA_SHORT', 45)),  # Was 60
+        'short': int(os.getenv('MIN_CONFIDENCE_SHORT', 40)),              # Was 50
+        'medium': int(os.getenv('MIN_CONFIDENCE_MEDIUM', 38)),            # Was 45
+        'long': int(os.getenv('MIN_CONFIDENCE_LONG', 35))                 # Was 40
     },
     
-    # Data requirements
+    # OPTIMIZED: Data requirements
     'data_requirements': {
         'ultra_short': {
-            'days': 3,
+            'days': 2,              # Reduced from 3
             'interval': 'minute',
-            'min_points': 500
+            'min_points': 400       # Reduced from 500
         },
         'short': {
-            'days': 7,
+            'days': 5,              # Reduced from 7
             'interval': 'hour',
-            'min_points': 150
+            'min_points': 100       # Reduced from 150
         },
         'medium': {
-            'days': 14,
+            'days': 10,             # Reduced from 14
             'interval': 'hour',
-            'min_points': 200
+            'min_points': 150       # Reduced from 200
         },
         'long': {
-            'days': 60,
+            'days': 45,             # Reduced from 60
             'interval': 'day',
-            'min_points': 120
+            'min_points': 90        # Reduced from 120
         }
     },
     
@@ -94,40 +98,40 @@ PREDICTION_CONFIG = {
 DATA_CONFIG = {
     'cryptocompare_api_key': os.getenv('CRYPTOCOMPARE_API_KEY'),
     'data_retention_days': 30,
-    'min_data_points': 150,
+    'min_data_points': 100,  # Reduced from 150
     'cache_ttl': 300,
     'api_fallback_intervals': ['hour', 'day'],
     'enable_caching': True,
     'max_cache_size_mb': 100,
 }
 
-# Model Configuration
+# IMPROVED: Model Configuration
 MODEL_CONFIG = {
     'lstm': {
-        'epochs': 40,
+        'epochs': 50,  # Increased from 40
         'batch_size': 64,
         'sequence_length': 60,
-        'patience': 10,
+        'patience': 12,  # Increased from 10
         'ultra_short_sequence': 30,
         'short_sequence': 60,
         'medium_sequence': 80,
         'long_sequence': 100
     },
     'rf': {
-        'n_estimators': 150,
-        'max_depth': 12,
-        'min_samples_split': 8
+        'n_estimators': 200,  # Increased from 150
+        'max_depth': 15,      # Increased from 12
+        'min_samples_split': 5  # Decreased from 8
     },
     'gb': {
-        'n_estimators': 150,
-        'learning_rate': 0.08,
-        'max_depth': 5
+        'n_estimators': 200,     # Increased from 150
+        'learning_rate': 0.1,    # Increased from 0.08
+        'max_depth': 6           # Increased from 5
     },
     'auto_retrain_interval': 86400,  # 24 hours
     'model_save_path': 'models/',
     'backup_path': 'models_backup/',
     'enable_model_validation': True,
-    'min_validation_score': 0.6,
+    'min_validation_score': 0.55,  # Lowered from 0.6
 }
 
 # Alert Configuration
@@ -142,7 +146,7 @@ ALERT_CONFIG = {
     'smtp_password': os.getenv('SMTP_PASSWORD'),
     
     'alert_on_low_winrate': True,
-    'min_winrate_alert': 45.0,
+    'min_winrate_alert': 42.0,  # Lowered from 45.0
     'alert_on_high_memory': True,
     'alert_on_consecutive_failures': True,
     'max_consecutive_failures': 3,
@@ -216,7 +220,7 @@ FIREBASE_COLLECTIONS = {
     'alerts': 'alerts',
 }
 
-# Trading Strategy Configuration
+# IMPROVED: Trading Strategy Configuration
 STRATEGY_CONFIG = {
     'enable_mtf_analysis': True,
     'mtf_confirmation_required': 2,
@@ -224,37 +228,38 @@ STRATEGY_CONFIG = {
     'correlation_timeframes': {
         5: [15, 30],
         15: [30, 60],
-        30: [60, 240],
-        60: [240, 720],
-        240: [720, 1440],
-        720: [1440, 2880],
-        1440: [2880, 4320]
+        30: [60, 120],
+        60: [120, 240],
+        120: [240, 480],
+        240: [480, 720],
+        720: [1440],
+        1440: [720]  # Daily correlates with 12h
     },
     
     'volatility_adjustments': {
         'high': {
-            'confidence_multiplier': 0.90,
+            'confidence_multiplier': 0.92,  # Less penalty
             'prefer_timeframes': [5, 15, 30],
             'volatility_threshold': 3.0
         },
         'medium': {
             'confidence_multiplier': 1.0,
-            'prefer_timeframes': [60, 240, 720],
+            'prefer_timeframes': [60, 120, 240],
             'volatility_threshold': 1.5
         },
         'low': {
-            'confidence_multiplier': 1.1,
-            'prefer_timeframes': [1440, 2880],
+            'confidence_multiplier': 1.08,  # More bonus
+            'prefer_timeframes': [720, 1440],
             'volatility_threshold': 1.0
         }
     },
     
     # Risk Management
     'risk_management': {
-        'max_daily_predictions': 100,
-        'max_predictions_per_timeframe': 20,
-        'cooldown_after_loss_streak': 3,
-        'cooldown_duration_minutes': 30,
+        'max_daily_predictions': 150,  # Increased from 100
+        'max_predictions_per_timeframe': 30,  # Increased from 20
+        'cooldown_after_loss_streak': 4,  # Increased from 3
+        'cooldown_duration_minutes': 20,  # Reduced from 30
     },
 }
 
@@ -286,15 +291,15 @@ def get_data_config_for_timeframe(timeframe_minutes: int) -> Dict:
     """Get recommended data configuration for a timeframe"""
     category = get_timeframe_category(timeframe_minutes)
     return PREDICTION_CONFIG['data_requirements'].get(category, {
-        'days': 7,
+        'days': 5,
         'interval': 'hour',
-        'min_points': 150
+        'min_points': 100
     })
 
 def get_min_confidence(timeframe_minutes: int) -> float:
     """Get minimum confidence threshold for timeframe"""
     category = get_timeframe_category(timeframe_minutes)
-    return PREDICTION_CONFIG['min_confidence'].get(category, 60.0)
+    return PREDICTION_CONFIG['min_confidence'].get(category, 40.0)
 
 def is_production() -> bool:
     """Check if running in production"""
