@@ -732,26 +732,36 @@ class ImprovedBitcoinPredictor:
             lstm_change = (lstm_pred - current_price) * time_factor
             gb_change = (gb_pred - current_price) * time_factor
             
-            # Base ensemble
+            # FIXED: Base ensemble WITHOUT RF bias
             base_ensemble = (
                 weights['lstm'] * lstm_change +
                 weights['gb'] * gb_change
             )
             
-            # RF adjustment
+            # FIXED: RF adjustment - respect RF direction properly
             rf_adjustment = 1.0
-            if rf_direction == 1:
-                rf_adjustment = 1.0 + (rf_confidence - 50) / 120
-            else:
-                rf_adjustment = 1.0 - (rf_confidence - 50) / 120
+            if rf_direction == 1:  # Bullish
+                # If RF says UP with high confidence, increase bullish bias
+                rf_adjustment = 1.0 + ((rf_confidence - 50) / 150)  # Max +0.33
+            else:  # Bearish (rf_direction == 0)
+                # If RF says DOWN with high confidence, increase bearish bias
+                rf_adjustment = 1.0 - ((rf_confidence - 50) / 150)  # Max -0.33
             
+            # Apply RF adjustment
             ensemble_change = base_ensemble * rf_adjustment
             
-            # Trend strength adjustment
+            # FIXED: Trend strength can be bearish or bullish
             trend_multiplier = self._calculate_trend_strength(df_clean)
             ensemble_change *= trend_multiplier
             
             predicted_price = current_price + ensemble_change
+            
+            # Ensure predicted_price is realistic
+            max_change_pct = 15  # Max 15% change
+            max_change = current_price * (max_change_pct / 100)
+            if abs(ensemble_change) > max_change:
+                ensemble_change = max_change if ensemble_change > 0 else -max_change
+                predicted_price = current_price + ensemble_change
             
             # === QUALITY ASSESSMENT ===
             
@@ -790,6 +800,15 @@ class ImprovedBitcoinPredictor:
             # === BUILD PREDICTION ===
             
             trend = "CALL (Bullish)" if ensemble_change > 0 else "PUT (Bearish)"
+            
+            # DEBUGGING: Log decision factors
+            logger.debug(f"   Decision factors:")
+            logger.debug(f"   - LSTM change: {lstm_change:+.2f}")
+            logger.debug(f"   - GB change: {gb_change:+.2f}")
+            logger.debug(f"   - RF direction: {'UP' if rf_direction == 1 else 'DOWN'} ({rf_confidence:.1f}%)")
+            logger.debug(f"   - Trend multiplier: {trend_multiplier:.3f}")
+            logger.debug(f"   - Final change: {ensemble_change:+.2f}")
+            logger.debug(f"   → Result: {trend}")
             
             # Calculate range
             volatility = df_clean['atr_14'].iloc[-1] if 'atr_14' in df_clean.columns else df_clean['price'].tail(20).std()
@@ -861,26 +880,40 @@ class ImprovedBitcoinPredictor:
             return min(timeframe_minutes / 1440, 1.5)
     
     def _calculate_trend_strength(self, df: pd.DataFrame) -> float:
-        """Calculate trend strength"""
+        """
+        Calculate trend strength
+        FIXED: Can return NEGATIVE for bearish trends
+        """
         try:
             recent = df.tail(20)
             
+            # Price momentum (can be negative)
             price_momentum = (recent.iloc[-1]['price'] - recent.iloc[0]['price']) / recent.iloc[0]['price']
             
+            # RSI strength
             rsi = recent['rsi_14'].iloc[-1] if 'rsi_14' in recent.columns else 50
-            rsi_strength = abs(rsi - 50) / 50
+            rsi_factor = (rsi - 50) / 50  # Negative if bearish, positive if bullish
             
+            # ADX strength (trend strength, not direction)
             adx = recent['adx'].iloc[-1] if 'adx' in recent.columns else 20
             adx_strength = min(adx / 50, 1.0)
             
+            # Volume confirmation
             volume_ratio = recent['volume_ratio_20'].iloc[-1] if 'volume_ratio_20' in recent.columns else 1.0
             volume_strength = min(volume_ratio / 2, 1.0)
             
-            strength = (abs(price_momentum) * 2 + rsi_strength + adx_strength + volume_strength) / 5
+            # FIXED: Combined strength that can be negative (bearish) or positive (bullish)
+            # Price momentum has most weight
+            strength = (
+                price_momentum * 3.0 +      # Most important
+                rsi_factor * 1.0 +          # Direction indicator
+                adx_strength * 0.5          # Trend strength (always positive)
+            ) / 4.5
             
-            multiplier = 0.85 + (strength * 0.3)
+            # Multiplier: 0.7 to 1.3 (can push bearish or bullish)
+            multiplier = 1.0 + (strength * 0.3)
             
-            return min(max(multiplier, 0.85), 1.15)
+            return max(min(multiplier, 1.3), 0.7)
             
         except:
             return 1.0

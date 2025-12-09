@@ -494,9 +494,21 @@ class ImprovedScheduler:
             for tf, scheduler in self.timeframe_schedulers.items():
                 if scheduler.should_predict_now():
                     timeframes_to_predict.append(tf)
+                    logger.debug(f"   ✅ {get_timeframe_label(tf)} scheduled")
+                else:
+                    next_pred = scheduler.get_next_prediction_time()
+                    mins_until = (next_pred - now).total_seconds() / 60
+                    logger.debug(f"   ⏭️ {get_timeframe_label(tf)} next in {mins_until:.0f}min")
             
             if not timeframes_to_predict:
-                logger.info("⏭️ No timeframes scheduled for this minute")
+                logger.info(f"⏭️ No timeframes scheduled at {now.strftime('%H:%M')}")
+                # Show when next predictions are
+                next_times = []
+                for tf, scheduler in self.timeframe_schedulers.items():
+                    next_t = scheduler.get_next_prediction_time()
+                    label = get_timeframe_label(tf)
+                    next_times.append(f"{label}@{next_t.strftime('%H:%M')}")
+                logger.info(f"   Next: {', '.join(next_times[:5])}")
                 logger.info(f"{'='*80}\n")
                 return
             
@@ -508,6 +520,8 @@ class ImprovedScheduler:
             
             # GUARANTEED: Run predictions for ALL scheduled timeframes
             predictions_made = 0
+            call_count = 0
+            put_count = 0
             
             for tf in timeframes_to_predict:
                 try:
@@ -535,6 +549,12 @@ class ImprovedScheduler:
                     if prediction:
                         self._display_prediction(prediction)
                         
+                        # Track CALL vs PUT
+                        if 'CALL' in prediction['trend']:
+                            call_count += 1
+                        else:
+                            put_count += 1
+                        
                         # Save to Firebase
                         if self.firebase and self.firebase.connected:
                             doc_id = self.firebase.save_prediction(prediction)
@@ -558,6 +578,8 @@ class ImprovedScheduler:
                         
                 except Exception as e:
                     logger.error(f"❌ Error predicting {get_timeframe_label(tf)}: {e}")
+                    import traceback
+                    traceback.print_exc()
                     self.failed_predictions += 1
                     continue
             
@@ -565,7 +587,8 @@ class ImprovedScheduler:
             
             logger.info(f"\n{'='*80}")
             logger.info(f"✅ Cycle complete - {predictions_made} predictions made")
-            logger.info(f"📊 Success: {self.successful_predictions}/{self.total_predictions}")
+            logger.info(f"📊 Distribution: 🟢 {call_count} CALL | 🔴 {put_count} PUT")
+            logger.info(f"📈 Total Success: {self.successful_predictions}/{self.total_predictions}")
             logger.info(f"{'='*80}\n")
             
             # Periodic cleanup

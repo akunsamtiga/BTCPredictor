@@ -59,27 +59,27 @@ PREDICTION_CONFIG = {
         'long': int(os.getenv('MIN_CONFIDENCE_LONG', 32))
     },
     
-    # Data requirements
+    # Data requirements - OPTIMIZED for all timeframes
     'data_requirements': {
         'ultra_short': {
             'days': 2,
             'interval': 'minute',
-            'min_points': 400
+            'min_points': 200  # Reduced from 400
         },
         'short': {
-            'days': 5,
+            'days': 3,
             'interval': 'hour',
-            'min_points': 100
+            'min_points': 60   # Reduced from 100
         },
         'medium': {
-            'days': 10,
+            'days': 7,         # Reduced from 10
             'interval': 'hour',
-            'min_points': 150
+            'min_points': 100  # Reduced from 150
         },
         'long': {
-            'days': 45,
+            'days': 30,        # Reduced from 45
             'interval': 'day',
-            'min_points': 90
+            'min_points': 50   # Reduced from 90
         }
     },
     
