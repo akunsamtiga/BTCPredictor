@@ -263,6 +263,150 @@ STRATEGY_CONFIG = {
     },
 }
 
+FAVORABLE_CONDITIONS = {
+    # Minimum price movement (%)
+    'min_trend_strength': 1.5,    # Harus ada trend minimal 1.5%
+    
+    # Maximum acceptable volatility (%)
+    'max_volatility': 5.0,         # Volatility tidak boleh >5%
+    
+    # Minimum volume ratio
+    'min_volume_ratio': 0.8,       # Volume harus minimal 80% dari average
+    
+    # RSI range (must be between these values)
+    'rsi_extremes': (25, 75),      # RSI antara 25-75 (avoid overbought/oversold)
+    
+    # ATR stability factor
+    'min_atr_stability': 0.7,      # ATR harus stabil (tidak terlalu berubah)
+}
+
+# === ENHANCED MODEL CONFIG ===
+MODEL_CONFIG_ENHANCED = {
+    'lstm': {
+        'epochs': 50,
+        'batch_size': 64,
+        'patience': 15,  # Lebih sabar untuk convergence
+        
+        # Sequence lengths per category
+        'ultra_short_sequence': 30,
+        'short_sequence': 60,
+        'medium_sequence': 80,
+        'long_sequence': 100,
+        
+        # Architecture
+        'use_attention': True,
+        'num_attention_heads': 4,
+        'use_bidirectional': True,
+        'gradient_clipping': 1.0,
+    },
+    
+    'rf': {
+        'n_estimators': 300,  # Lebih banyak trees
+        'max_depth': 18,
+        'min_samples_split': 4,
+        'min_samples_leaf': 2,
+        'class_weight': 'balanced'
+    },
+    
+    'gb': {
+        'n_estimators': 300,
+        'learning_rate': 0.08,
+        'max_depth': 7,
+        'subsample': 0.8
+    },
+    
+    # Minimum required training data
+    'min_training_samples': 1000,  # Need more data for better models
+    
+    # Validation
+    'time_series_splits': 5,  # Cross-validation folds
+    'min_validation_score': 0.65,  # Minimum acceptable score
+}
+
+# === ULTRA-STRICT CONFIDENCE THRESHOLDS ===
+ULTRA_STRICT_THRESHOLDS = {
+    'ultra_short': 60,  # 60%+ confidence required
+    'short': 55,        # 55%+ confidence required
+    'medium': 52,       # 52%+ confidence required
+    'long': 50,         # 50%+ confidence required
+}
+
+# === PREDICTION FILTERS ===
+PREDICTION_FILTERS = {
+    # Reject if prediction change too large
+    'max_change_pct': 10.0,  # Reject >10% change
+    
+    # Reject if prediction change too small (noise)
+    'min_change_pct': 0.1,   # Reject <0.1% change
+    
+    # Model agreement requirement
+    'require_all_models_agree': False,  # Set True for maximum strictness
+    
+    # Minimum model agreement (0-1)
+    'min_model_agreement': 0.67,  # At least 2 out of 3 must agree
+}
+
+# === ADAPTIVE LEARNING ===
+ADAPTIVE_CONFIG = {
+    # Track recent performance
+    'recent_predictions_window': 50,
+    'recent_wins_window': 50,
+    
+    # Threshold adjustment based on performance
+    'adjust_threshold_on_poor_performance': True,
+    'poor_performance_winrate': 0.60,  # <60% is poor
+    'good_performance_winrate': 0.75,  # >75% is good
+    
+    # Threshold adjustments
+    'threshold_increase_on_poor': 5,  # +5% threshold if performing poorly
+    'threshold_decrease_on_good': 3,  # -3% threshold if performing well
+}
+
+# === ENHANCED FEATURES ===
+FEATURE_CONFIG = {
+    # Technical indicators to calculate
+    'use_multiple_rsi_periods': True,
+    'rsi_periods': [7, 14, 21, 28],
+    
+    'use_multiple_macd_settings': True,
+    'macd_settings': [(12, 26, 9), (5, 35, 5), (19, 39, 9)],
+    
+    'use_multiple_bb_settings': True,
+    'bb_settings': [(20, 2), (20, 3), (50, 2)],
+    
+    'use_adx': True,
+    'adx_periods': [14, 21],
+    
+    'use_stochastic': True,
+    'stochastic_settings': [(14, 3), (21, 3), (14, 5)],
+    
+    'use_fibonacci': True,
+    'fibonacci_windows': [20, 50],
+    
+    'use_williams_r': True,
+    'use_keltner_channels': True,
+    'use_volume_indicators': True,
+    
+    # Total features: ~100+
+    'expected_feature_count': 100,
+}
+
+# === DEPLOYMENT SETTINGS ===
+DEPLOYMENT_CONFIG = {
+    # Log all filtered predictions for analysis
+    'log_rejected_predictions': True,
+    'rejected_predictions_file': 'logs/rejected_predictions.log',
+    
+    # Performance monitoring
+    'track_model_performance': True,
+    'performance_update_interval': 10,  # Update every 10 validations
+    
+    # Auto-retraining
+    'retrain_on_poor_performance': True,
+    'retrain_threshold_winrate': 0.55,  # Retrain if <55%
+    'min_predictions_before_retrain': 100,
+}
+
 # Helper Functions
 def get_timeframe_category(minutes: int) -> str:
     """Get category for a timeframe"""
