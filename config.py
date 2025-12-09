@@ -1,9 +1,6 @@
 """
-IMPROVED Configuration
-CHANGES:
-1. Lower confidence thresholds for more predictions
-2. Better timeframe distribution
-3. Optimized data requirements
+Configuration for Bitcoin Predictor
+WITHOUT BACKTESTING
 """
 
 import os
@@ -39,53 +36,53 @@ FIREBASE_CONFIG = {
     'connection_timeout': 30
 }
 
-# IMPROVED: Prediction Configuration
+# Prediction Configuration
 PREDICTION_CONFIG = {
-    # Timeframes (minutes) - OPTIMIZED
-    'ultra_short_timeframes': [5, 10, 15],  # Added 15
-    'short_timeframes': [30, 60],  # Simplified
-    'medium_timeframes': [120, 240, 480],  # Added 480 (8h)
-    'long_timeframes': [720, 1440],  # Removed 2880 (too long)
+    # Timeframes (minutes)
+    'ultra_short_timeframes': [5, 10, 15],
+    'short_timeframes': [30, 60],
+    'medium_timeframes': [120, 240, 480],
+    'long_timeframes': [720, 1440],
     
-    # Active timeframes - MORE FOCUSED
+    # Active timeframes
     'active_timeframes': [
-        5, 15, 30,       # Ultra short & short
-        60, 120,         # Short & medium
-        240, 720,        # Medium & long
-        1440             # Daily
+        5, 15, 30,
+        60, 120,
+        240, 720,
+        1440
     ],
     
-    'priority_timeframes': [15, 60, 240, 1440],  # Added 15min
+    'priority_timeframes': [15, 60, 240, 1440],
     
-    # LOWERED: Minimum confidence thresholds for more predictions
+    # Minimum confidence thresholds
     'min_confidence': {
-        'ultra_short': int(os.getenv('MIN_CONFIDENCE_ULTRA_SHORT', 45)),  # Was 60
-        'short': int(os.getenv('MIN_CONFIDENCE_SHORT', 40)),              # Was 50
-        'medium': int(os.getenv('MIN_CONFIDENCE_MEDIUM', 38)),            # Was 45
-        'long': int(os.getenv('MIN_CONFIDENCE_LONG', 35))                 # Was 40
+        'ultra_short': int(os.getenv('MIN_CONFIDENCE_ULTRA_SHORT', 45)),
+        'short': int(os.getenv('MIN_CONFIDENCE_SHORT', 40)),
+        'medium': int(os.getenv('MIN_CONFIDENCE_MEDIUM', 38)),
+        'long': int(os.getenv('MIN_CONFIDENCE_LONG', 35))
     },
     
-    # OPTIMIZED: Data requirements
+    # Data requirements
     'data_requirements': {
         'ultra_short': {
-            'days': 2,              # Reduced from 3
+            'days': 2,
             'interval': 'minute',
-            'min_points': 400       # Reduced from 500
+            'min_points': 400
         },
         'short': {
-            'days': 5,              # Reduced from 7
+            'days': 5,
             'interval': 'hour',
-            'min_points': 100       # Reduced from 150
+            'min_points': 100
         },
         'medium': {
-            'days': 10,             # Reduced from 14
+            'days': 10,
             'interval': 'hour',
-            'min_points': 150       # Reduced from 200
+            'min_points': 150
         },
         'long': {
-            'days': 45,             # Reduced from 60
+            'days': 45,
             'interval': 'day',
-            'min_points': 90        # Reduced from 120
+            'min_points': 90
         }
     },
     
@@ -98,40 +95,40 @@ PREDICTION_CONFIG = {
 DATA_CONFIG = {
     'cryptocompare_api_key': os.getenv('CRYPTOCOMPARE_API_KEY'),
     'data_retention_days': 30,
-    'min_data_points': 100,  # Reduced from 150
+    'min_data_points': 100,
     'cache_ttl': 300,
     'api_fallback_intervals': ['hour', 'day'],
     'enable_caching': True,
     'max_cache_size_mb': 100,
 }
 
-# IMPROVED: Model Configuration
+# Model Configuration
 MODEL_CONFIG = {
     'lstm': {
-        'epochs': 50,  # Increased from 40
+        'epochs': 50,
         'batch_size': 64,
         'sequence_length': 60,
-        'patience': 12,  # Increased from 10
+        'patience': 12,
         'ultra_short_sequence': 30,
         'short_sequence': 60,
         'medium_sequence': 80,
         'long_sequence': 100
     },
     'rf': {
-        'n_estimators': 200,  # Increased from 150
-        'max_depth': 15,      # Increased from 12
-        'min_samples_split': 5  # Decreased from 8
+        'n_estimators': 200,
+        'max_depth': 15,
+        'min_samples_split': 5
     },
     'gb': {
-        'n_estimators': 200,     # Increased from 150
-        'learning_rate': 0.1,    # Increased from 0.08
-        'max_depth': 6           # Increased from 5
+        'n_estimators': 200,
+        'learning_rate': 0.1,
+        'max_depth': 6
     },
     'auto_retrain_interval': 86400,  # 24 hours
     'model_save_path': 'models/',
     'backup_path': 'models_backup/',
     'enable_model_validation': True,
-    'min_validation_score': 0.55,  # Lowered from 0.6
+    'min_validation_score': 0.55,
 }
 
 # Alert Configuration
@@ -146,7 +143,7 @@ ALERT_CONFIG = {
     'smtp_password': os.getenv('SMTP_PASSWORD'),
     
     'alert_on_low_winrate': True,
-    'min_winrate_alert': 42.0,  # Lowered from 45.0
+    'min_winrate_alert': 42.0,
     'alert_on_high_memory': True,
     'alert_on_consecutive_failures': True,
     'max_consecutive_failures': 3,
@@ -220,7 +217,7 @@ FIREBASE_COLLECTIONS = {
     'alerts': 'alerts',
 }
 
-# IMPROVED: Trading Strategy Configuration
+# Trading Strategy Configuration
 STRATEGY_CONFIG = {
     'enable_mtf_analysis': True,
     'mtf_confirmation_required': 2,
@@ -233,12 +230,12 @@ STRATEGY_CONFIG = {
         120: [240, 480],
         240: [480, 720],
         720: [1440],
-        1440: [720]  # Daily correlates with 12h
+        1440: [720]
     },
     
     'volatility_adjustments': {
         'high': {
-            'confidence_multiplier': 0.92,  # Less penalty
+            'confidence_multiplier': 0.92,
             'prefer_timeframes': [5, 15, 30],
             'volatility_threshold': 3.0
         },
@@ -248,7 +245,7 @@ STRATEGY_CONFIG = {
             'volatility_threshold': 1.5
         },
         'low': {
-            'confidence_multiplier': 1.08,  # More bonus
+            'confidence_multiplier': 1.08,
             'prefer_timeframes': [720, 1440],
             'volatility_threshold': 1.0
         }
@@ -256,154 +253,109 @@ STRATEGY_CONFIG = {
     
     # Risk Management
     'risk_management': {
-        'max_daily_predictions': 150,  # Increased from 100
-        'max_predictions_per_timeframe': 30,  # Increased from 20
-        'cooldown_after_loss_streak': 4,  # Increased from 3
-        'cooldown_duration_minutes': 20,  # Reduced from 30
+        'max_daily_predictions': 150,
+        'max_predictions_per_timeframe': 30,
+        'cooldown_after_loss_streak': 4,
+        'cooldown_duration_minutes': 20,
     },
 }
 
 FAVORABLE_CONDITIONS = {
-    # Minimum price movement (%)
-    'min_trend_strength': 1.5,    # Harus ada trend minimal 1.5%
-    
-    # Maximum acceptable volatility (%)
-    'max_volatility': 5.0,         # Volatility tidak boleh >5%
-    
-    # Minimum volume ratio
-    'min_volume_ratio': 0.8,       # Volume harus minimal 80% dari average
-    
-    # RSI range (must be between these values)
-    'rsi_extremes': (25, 75),      # RSI antara 25-75 (avoid overbought/oversold)
-    
-    # ATR stability factor
-    'min_atr_stability': 0.7,      # ATR harus stabil (tidak terlalu berubah)
+    'min_trend_strength': 1.5,
+    'max_volatility': 5.0,
+    'min_volume_ratio': 0.8,
+    'rsi_extremes': (25, 75),
+    'min_atr_stability': 0.7,
 }
 
-# === ENHANCED MODEL CONFIG ===
+# Enhanced Model Config
 MODEL_CONFIG_ENHANCED = {
     'lstm': {
         'epochs': 50,
         'batch_size': 64,
-        'patience': 15,  # Lebih sabar untuk convergence
-        
-        # Sequence lengths per category
+        'patience': 15,
         'ultra_short_sequence': 30,
         'short_sequence': 60,
         'medium_sequence': 80,
         'long_sequence': 100,
-        
-        # Architecture
         'use_attention': True,
         'num_attention_heads': 4,
         'use_bidirectional': True,
         'gradient_clipping': 1.0,
     },
-    
     'rf': {
-        'n_estimators': 300,  # Lebih banyak trees
+        'n_estimators': 300,
         'max_depth': 18,
         'min_samples_split': 4,
         'min_samples_leaf': 2,
         'class_weight': 'balanced'
     },
-    
     'gb': {
         'n_estimators': 300,
         'learning_rate': 0.08,
         'max_depth': 7,
         'subsample': 0.8
     },
-    
-    # Minimum required training data
-    'min_training_samples': 1000,  # Need more data for better models
-    
-    # Validation
-    'time_series_splits': 5,  # Cross-validation folds
-    'min_validation_score': 0.65,  # Minimum acceptable score
+    'min_training_samples': 1000,
+    'time_series_splits': 5,
+    'min_validation_score': 0.65,
 }
 
-# === ULTRA-STRICT CONFIDENCE THRESHOLDS ===
+# Ultra-Strict Confidence Thresholds
 ULTRA_STRICT_THRESHOLDS = {
-    'ultra_short': 60,  # 60%+ confidence required
-    'short': 55,        # 55%+ confidence required
-    'medium': 52,       # 52%+ confidence required
-    'long': 50,         # 50%+ confidence required
+    'ultra_short': 60,
+    'short': 55,
+    'medium': 52,
+    'long': 50,
 }
 
-# === PREDICTION FILTERS ===
+# Prediction Filters
 PREDICTION_FILTERS = {
-    # Reject if prediction change too large
-    'max_change_pct': 10.0,  # Reject >10% change
-    
-    # Reject if prediction change too small (noise)
-    'min_change_pct': 0.1,   # Reject <0.1% change
-    
-    # Model agreement requirement
-    'require_all_models_agree': False,  # Set True for maximum strictness
-    
-    # Minimum model agreement (0-1)
-    'min_model_agreement': 0.67,  # At least 2 out of 3 must agree
+    'max_change_pct': 10.0,
+    'min_change_pct': 0.1,
+    'require_all_models_agree': False,
+    'min_model_agreement': 0.67,
 }
 
-# === ADAPTIVE LEARNING ===
+# Adaptive Learning
 ADAPTIVE_CONFIG = {
-    # Track recent performance
     'recent_predictions_window': 50,
     'recent_wins_window': 50,
-    
-    # Threshold adjustment based on performance
     'adjust_threshold_on_poor_performance': True,
-    'poor_performance_winrate': 0.60,  # <60% is poor
-    'good_performance_winrate': 0.75,  # >75% is good
-    
-    # Threshold adjustments
-    'threshold_increase_on_poor': 5,  # +5% threshold if performing poorly
-    'threshold_decrease_on_good': 3,  # -3% threshold if performing well
+    'poor_performance_winrate': 0.60,
+    'good_performance_winrate': 0.75,
+    'threshold_increase_on_poor': 5,
+    'threshold_decrease_on_good': 3,
 }
 
-# === ENHANCED FEATURES ===
+# Enhanced Features
 FEATURE_CONFIG = {
-    # Technical indicators to calculate
     'use_multiple_rsi_periods': True,
     'rsi_periods': [7, 14, 21, 28],
-    
     'use_multiple_macd_settings': True,
     'macd_settings': [(12, 26, 9), (5, 35, 5), (19, 39, 9)],
-    
     'use_multiple_bb_settings': True,
     'bb_settings': [(20, 2), (20, 3), (50, 2)],
-    
     'use_adx': True,
     'adx_periods': [14, 21],
-    
     'use_stochastic': True,
     'stochastic_settings': [(14, 3), (21, 3), (14, 5)],
-    
     'use_fibonacci': True,
     'fibonacci_windows': [20, 50],
-    
     'use_williams_r': True,
     'use_keltner_channels': True,
     'use_volume_indicators': True,
-    
-    # Total features: ~100+
     'expected_feature_count': 100,
 }
 
-# === DEPLOYMENT SETTINGS ===
+# Deployment Settings
 DEPLOYMENT_CONFIG = {
-    # Log all filtered predictions for analysis
     'log_rejected_predictions': True,
     'rejected_predictions_file': 'logs/rejected_predictions.log',
-    
-    # Performance monitoring
     'track_model_performance': True,
-    'performance_update_interval': 10,  # Update every 10 validations
-    
-    # Auto-retraining
+    'performance_update_interval': 10,
     'retrain_on_poor_performance': True,
-    'retrain_threshold_winrate': 0.55,  # Retrain if <55%
+    'retrain_threshold_winrate': 0.55,
     'min_predictions_before_retrain': 100,
 }
 
