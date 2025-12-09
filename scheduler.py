@@ -1,7 +1,6 @@
 """
 Smart Scheduler - Timeframe-Based Prediction
-Each timeframe runs at its optimal interval with independent analysis
-ALL TIMESTAMPS IN WIB (UTC+7)
+FIXED: Fetch more data for training (90 days minimum)
 """
 
 import time
@@ -377,7 +376,9 @@ class ImprovedScheduler:
             return False
     
     def train_models(self) -> bool:
-        """Train models"""
+        """
+        FIXED: Train models with MORE DATA (90 days minimum)
+        """
         try:
             logger.info(f"\n{'='*80}")
             logger.info("🤖 TRAINING MODELS")
@@ -386,29 +387,77 @@ class ImprovedScheduler:
             if self.heartbeat:
                 self.heartbeat.send_status_change('training', 'Training ML models')
             
-            # Fetch training data
-            df = get_bitcoin_data_realtime(days=30, interval='hour')
+            # ================================================================
+            # FIXED: Fetch MORE training data (90 days with hourly interval)
+            # This gives ~2160 data points before dropna()
+            # ================================================================
+            logger.info("📡 Fetching training data (90 days, hourly)...")
+            df = get_bitcoin_data_realtime(days=90, interval='hour')
             
-            if df is None or len(df) < 500:
-                logger.error("❌ Insufficient training data")
-                if self.alert_manager:
-                    self.alert_manager.send_alert(
-                        "Training Data Insufficient",
-                        f"Only {len(df) if df is not None else 0} data points available",
-                        AlertSeverity.CRITICAL,
-                        "training_data"
-                    )
+            if df is None:
+                logger.error("❌ Failed to fetch training data")
                 return False
             
+            initial_points = len(df)
+            logger.info(f"📊 Retrieved {initial_points} raw data points")
+            
+            # Add technical indicators
+            logger.info("🔧 Adding technical indicators...")
             df = add_technical_indicators(df)
             
-            mem_before = self._check_memory()
-            logger.info(f"Memory before training: {mem_before:.0f}MB")
+            # Clean data
+            df_clean = df.dropna()
+            clean_points = len(df_clean)
             
-            success = self.predictor.train_models(df, epochs=40, batch_size=64)
+            logger.info(f"🧹 After cleaning: {clean_points} data points")
+            logger.info(f"   Dropped: {initial_points - clean_points} rows with NaN")
+            
+            # ================================================================
+            # CHECK: Need at least 1000 points for training
+            # ================================================================
+            if clean_points < 1000:
+                logger.error(f"❌ Still insufficient data: {clean_points} < 1000")
+                logger.error("   Possible solutions:")
+                logger.error("   1. Increase days (currently 90)")
+                logger.error("   2. Use 'day' interval for more history")
+                logger.error("   3. Check API rate limits")
+                
+                # Try fallback: 180 days daily data
+                logger.info("\n🔄 FALLBACK: Trying 180 days with daily interval...")
+                df = get_bitcoin_data_realtime(days=180, interval='day')
+                
+                if df is None:
+                    logger.error("❌ Fallback also failed")
+                    return False
+                
+                logger.info(f"📊 Fallback retrieved {len(df)} data points")
+                df = add_technical_indicators(df)
+                df_clean = df.dropna()
+                clean_points = len(df_clean)
+                
+                logger.info(f"🧹 After cleaning: {clean_points} data points")
+                
+                if clean_points < 500:
+                    logger.error(f"❌ Even fallback insufficient: {clean_points}")
+                    
+                    if self.alert_manager:
+                        self.alert_manager.send_alert(
+                            "Training Data Insufficient",
+                            f"Only {clean_points} data points available after cleaning.\n"
+                            f"Training aborted. Please check data source.",
+                            AlertSeverity.CRITICAL,
+                            "training_data"
+                        )
+                    return False
+            
+            mem_before = self._check_memory()
+            logger.info(f"💾 Memory before training: {mem_before:.0f}MB")
+            
+            # Train with cleaned data
+            success = self.predictor.train_models(df_clean, epochs=40, batch_size=64)
             
             mem_after = self._check_memory()
-            logger.info(f"Memory after training: {mem_after:.0f}MB")
+            logger.info(f"💾 Memory after training: {mem_after:.0f}MB")
             
             if success:
                 # Save metrics
@@ -433,6 +482,9 @@ class ImprovedScheduler:
                 
         except Exception as e:
             logger.error(f"❌ Training error: {e}")
+            import traceback
+            traceback.print_exc()
+            
             if self.alert_manager:
                 self.alert_manager.alert_model_retrain(False)
             return False
@@ -562,7 +614,7 @@ class ImprovedScheduler:
                             else:
                                 self.failed_predictions += 1
                     else:
-                        logger.info(f"⭕ Skipped (low confidence)")
+                        logger.info(f"⛔ Skipped (low confidence)")
                         
                 except Exception as e:
                     logger.error(f"❌ Error predicting {get_timeframe_label(tf)}: {e}")

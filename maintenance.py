@@ -1,6 +1,6 @@
 """
 FIXED Maintenance Tools
-Corrected validation logic
+FIXED: Use 90 days data for training
 """
 
 import sys
@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 import logging
 from firebase_manager import FirebaseManager
 from btc_predictor_automated import (
-    BitcoinMLPredictor, get_bitcoin_data_realtime, 
+    ImprovedBitcoinPredictor, get_bitcoin_data_realtime, 
     add_technical_indicators, get_current_btc_price
 )
 from config import (
@@ -51,27 +51,69 @@ def cleanup_old_data(days=30):
 
 
 def force_retrain_models():
-    """Force retrain all ML models"""
-    print_header("🤖 Force Retraining Models")
+    """
+    FIXED: Force retrain all ML models with 90 days data
+    """
+    print_header("🤖 Force Retraining Models (90 Days Data)")
     
     try:
-        print("\n📡 Fetching training data...")
-        df = get_bitcoin_data_realtime(days=30, interval='hour')
+        # ================================================================
+        # FIXED: Fetch 90 days data for training
+        # ================================================================
+        print("\n📡 Fetching training data (90 days, hourly)...")
+        df = get_bitcoin_data_realtime(days=90, interval='hour')
         
-        if df is None or len(df) < 200:
-            print("❌ Insufficient data for training")
+        if df is None:
+            print("❌ Failed to fetch data")
             return
         
-        print("📊 Adding technical indicators...")
+        initial_points = len(df)
+        print(f"📊 Retrieved {initial_points} raw data points")
+        
+        print("🔧 Adding technical indicators...")
         df = add_technical_indicators(df)
         
-        print("🤖 Initializing predictor...")
-        predictor = BitcoinMLPredictor()
+        # Clean data
+        df_clean = df.dropna()
+        clean_points = len(df_clean)
+        
+        print(f"🧹 After cleaning: {clean_points} data points")
+        print(f"   Dropped: {initial_points - clean_points} rows with NaN")
+        
+        # Check minimum requirement
+        if clean_points < 1000:
+            print(f"\n⚠️ Warning: Only {clean_points} data points (recommended: 1000+)")
+            
+            # Try fallback
+            print("\n🔄 FALLBACK: Trying 180 days with daily interval...")
+            df = get_bitcoin_data_realtime(days=180, interval='day')
+            
+            if df is None:
+                print("❌ Fallback failed")
+                return
+            
+            print(f"📊 Fallback retrieved {len(df)} data points")
+            df = add_technical_indicators(df)
+            df_clean = df.dropna()
+            clean_points = len(df_clean)
+            
+            print(f"🧹 After cleaning: {clean_points} data points")
+            
+            if clean_points < 500:
+                print(f"❌ Even fallback insufficient: {clean_points}")
+                print("\n   Please check:")
+                print("   1. API key is valid")
+                print("   2. Internet connection")
+                print("   3. CryptoCompare API status")
+                return
+        
+        print("\n🤖 Initializing predictor...")
+        predictor = ImprovedBitcoinPredictor()
         
         print("\n🚀 Starting training...")
         print("This may take 10-20 minutes...")
         
-        success = predictor.train_models(df, epochs=50, batch_size=32)
+        success = predictor.train_models(df_clean, epochs=50, batch_size=32)
         
         if success:
             print("\n✅ Training completed successfully!")
@@ -393,7 +435,7 @@ def main():
         print("\n" + "=" * 80)
         print("MENU:")
         print("  1. Cleanup Old Data")
-        print("  2. Force Retrain Models")
+        print("  2. Force Retrain Models (90 Days Data)")
         print("  3. Validate All Pending")
         print("  4. Validate by Category")
         print("  5. Reset Statistics")
