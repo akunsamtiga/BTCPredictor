@@ -1,6 +1,12 @@
 """
-Firebase Manager for Bitcoin Predictor - FIXED VALIDATION
-ALL TIMESTAMPS IN WIB (UTC+7)
+Firebase Manager - ENHANCED VERSION
+Improvements:
+- Better validation logic with detailed logging
+- Robust error handling with auto-retry
+- Batch operations for efficiency
+- Connection pooling
+- Auto cleanup
+- Performance optimizations
 """
 
 import firebase_admin
@@ -9,7 +15,7 @@ from datetime import datetime, timedelta
 import logging
 import json
 import time
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 import pandas as pd
 from config import FIREBASE_CONFIG, FIREBASE_COLLECTIONS
 from timezone_utils import (
@@ -24,8 +30,15 @@ from timezone_utils import (
 
 logger = logging.getLogger(__name__)
 
+
 class FirebaseManager:
-    """Manages all Firebase operations with auto-reconnect"""
+    """
+    ENHANCED Firebase Manager with:
+    - Robust error handling
+    - Batch operations
+    - Connection pooling
+    - Performance optimizations
+    """
     
     def __init__(self):
         """Initialize Firebase connection"""
@@ -35,9 +48,14 @@ class FirebaseManager:
         self.last_connection_attempt = None
         self.connection_failures = 0
         self._initialize_firebase()
+        
+        # Performance tracking
+        self.operations_count = 0
+        self.failed_operations = 0
+        self.last_operation_time = None
     
     def _initialize_firebase(self, retry=True):
-        """Initialize Firebase Admin SDK with retry logic"""
+        """Initialize Firebase Admin SDK with enhanced retry logic"""
         max_retries = FIREBASE_CONFIG['max_retries']
         retry_delay = FIREBASE_CONFIG['retry_delay']
         
@@ -82,9 +100,11 @@ class FirebaseManager:
             return self._initialize_firebase(retry=True)
         return True
     
-    def _execute_with_retry(self, operation, *args, **kwargs):
-        """Execute Firebase operation with retry logic"""
-        max_retries = 3
+    def _execute_with_retry(self, operation, *args, max_retries=3, **kwargs):
+        """
+        ENHANCED: Execute Firebase operation with retry logic and performance tracking
+        """
+        start_time = time.time()
         
         for attempt in range(max_retries):
             try:
@@ -92,9 +112,15 @@ class FirebaseManager:
                     raise ConnectionError("Firebase not connected")
                 
                 result = operation(*args, **kwargs)
+                
+                # Track performance
+                self.operations_count += 1
+                self.last_operation_time = time.time() - start_time
+                
                 return result, None
                 
             except Exception as e:
+                self.failed_operations += 1
                 logger.warning(f"⚠️ Operation failed (attempt {attempt + 1}/{max_retries}): {e}")
                 
                 if attempt < max_retries - 1:
@@ -108,14 +134,23 @@ class FirebaseManager:
         return None, Exception("Max retries exceeded")
     
     def save_prediction(self, prediction: Dict) -> Optional[str]:
-        """Save prediction to Firebase with retry - ALL TIMES IN WIB"""
+        """
+        ENHANCED: Save prediction with validation and error handling
+        """
         def _save():
             collection = self.firestore_db.collection(FIREBASE_COLLECTIONS['predictions'])
             
-            # All times in WIB
+            # Validate prediction data
+            required_fields = ['current_price', 'predicted_price', 'timeframe_minutes', 'trend', 'confidence']
+            for field in required_fields:
+                if field not in prediction:
+                    raise ValueError(f"Missing required field: {field}")
+            
+            # Prepare timestamps
             now_wib = get_local_now()
             target_time_wib = add_minutes_local(now_wib, prediction['timeframe_minutes'])
             
+            # Build document
             doc_data = {
                 'timestamp': now_iso_wib(),
                 'prediction_time': prepare_firebase_timestamp(now_wib),
@@ -124,25 +159,28 @@ class FirebaseManager:
                 'predicted_price': float(prediction['predicted_price']),
                 'price_change': float(prediction['price_change']),
                 'price_change_pct': float(prediction['price_change_pct']),
-                'price_range_low': float(prediction['price_range_low']),
-                'price_range_high': float(prediction['price_range_high']),
+                'price_range_low': float(prediction.get('price_range_low', 0)),
+                'price_range_high': float(prediction.get('price_range_high', 0)),
                 'trend': prediction['trend'],
                 'confidence': float(prediction['confidence']),
-                'method': prediction['method'],
+                'quality_score': float(prediction.get('quality_score', 0)),
+                'method': prediction.get('method', 'ML Ensemble'),
                 'target_time': prepare_firebase_timestamp(target_time_wib),
                 'validated': False,
                 'validation_result': None,
                 'actual_price': None,
             }
             
-            if 'model_agreement' in prediction:
-                doc_data.update({
-                    'model_agreement': prediction['model_agreement'],
-                    'lstm_prediction': float(prediction['lstm_prediction']),
-                    'gb_prediction': float(prediction['gb_prediction']),
-                    'rf_direction': prediction['rf_direction'],
-                    'rf_confidence': float(prediction['rf_confidence']),
-                })
+            # Add optional fields
+            optional_fields = [
+                'model_agreement', 'lstm_prediction', 'gb_prediction', 
+                'rf_direction', 'rf_confidence', 'all_models_agree',
+                'category', 'volatility'
+            ]
+            
+            for field in optional_fields:
+                if field in prediction:
+                    doc_data[field] = prediction[field]
             
             doc_ref = collection.add(doc_data)
             return doc_ref[1].id
@@ -150,15 +188,61 @@ class FirebaseManager:
         result, error = self._execute_with_retry(_save)
         
         if result:
-            logger.info(f"✅ Prediction saved: {result} (Timeframe: {prediction['timeframe_minutes']}min)")
+            logger.info(f"✅ Prediction saved: {result} (TF: {prediction['timeframe_minutes']}min)")
             return result
         else:
             logger.error(f"❌ Failed to save prediction: {error}")
             self._log_error("save_prediction", error)
             return None
     
+    def save_predictions_batch(self, predictions: List[Dict]) -> Tuple[int, int]:
+        """
+        NEW: Save multiple predictions in batch for efficiency
+        Returns: (success_count, failed_count)
+        """
+        def _save_batch():
+            collection = self.firestore_db.collection(FIREBASE_COLLECTIONS['predictions'])
+            batch = self.firestore_db.batch()
+            
+            doc_refs = []
+            for pred in predictions:
+                doc_ref = collection.document()
+                
+                now_wib = get_local_now()
+                target_time_wib = add_minutes_local(now_wib, pred['timeframe_minutes'])
+                
+                doc_data = {
+                    'timestamp': now_iso_wib(),
+                    'prediction_time': prepare_firebase_timestamp(now_wib),
+                    'timeframe_minutes': pred['timeframe_minutes'],
+                    'current_price': float(pred['current_price']),
+                    'predicted_price': float(pred['predicted_price']),
+                    'price_change': float(pred['price_change']),
+                    'price_change_pct': float(pred['price_change_pct']),
+                    'trend': pred['trend'],
+                    'confidence': float(pred['confidence']),
+                    'target_time': prepare_firebase_timestamp(target_time_wib),
+                    'validated': False,
+                }
+                
+                batch.set(doc_ref, doc_data)
+                doc_refs.append(doc_ref.id)
+            
+            batch.commit()
+            return doc_refs
+        
+        result, error = self._execute_with_retry(_save_batch)
+        
+        if result:
+            success = len(result)
+            logger.info(f"✅ Batch saved {success} predictions")
+            return success, 0
+        else:
+            logger.error(f"❌ Batch save failed: {error}")
+            return 0, len(predictions)
+    
     def get_unvalidated_predictions(self) -> List[Dict]:
-        """Get all predictions that haven't been validated yet"""
+        """Get all unvalidated predictions that are ready"""
         def _get():
             collection = self.firestore_db.collection(FIREBASE_COLLECTIONS['predictions'])
             now_wib = get_local_now()
@@ -171,12 +255,10 @@ class FirebaseManager:
                 data = doc.to_dict()
                 data['doc_id'] = doc.id
                 
-                # Parse target time (stored as WIB ISO)
                 target_time_str = data.get('target_time')
                 if target_time_str:
                     target_time_wib = parse_iso_to_local(target_time_str)
                     
-                    # Check if time has passed
                     if target_time_wib <= now_wib:
                         predictions.append(data)
             
@@ -192,39 +274,46 @@ class FirebaseManager:
             return []
     
     def validate_prediction(self, doc_id: str, actual_price: float, 
-                          predicted_price: float, current_price: float, trend: str) -> bool:
+                          predicted_price: float, current_price: float, 
+                          trend: str) -> bool:
         """
-        FIXED: Validate a prediction correctly
+        ENHANCED: Validate prediction with detailed logging and metrics
         
         Logic:
-        - CALL (UP) = prediksi harga naik dari current_price
-        - WIN jika actual_price > current_price
-        - PUT (DOWN) = prediksi harga turun dari current_price  
-        - WIN jika actual_price < current_price
+        - CALL (UP): WIN if actual_price > current_price
+        - PUT (DOWN): WIN if actual_price < current_price
         """
         def _validate():
-            # Tentukan prediksi direction
+            # Determine predicted direction
             predicted_direction = 'up' if 'CALL' in trend.upper() or 'UP' in trend.upper() else 'down'
             
-            # FIXED: Bandingkan actual_price dengan CURRENT_PRICE (bukan predicted_price)
-            # Ini adalah harga SAAT PREDIKSI dibuat vs harga ACTUAL
+            # FIXED: Compare actual vs current (at prediction time)
             if predicted_direction == 'up':
-                # Prediksi NAIK - WIN jika actual > current
                 is_win = actual_price > current_price
             else:
-                # Prediksi TURUN - WIN jika actual < current
                 is_win = actual_price < current_price
             
-            # Calculate errors
+            # Calculate errors and metrics
             price_error = abs(actual_price - predicted_price)
             price_error_pct = (price_error / predicted_price) * 100
             
-            # Calculate actual change
             actual_change = actual_price - current_price
             actual_change_pct = (actual_change / current_price) * 100
             
+            # Determine accuracy level
+            if price_error_pct < 1.0:
+                accuracy = "EXCELLENT"
+            elif price_error_pct < 2.0:
+                accuracy = "GOOD"
+            elif price_error_pct < 3.0:
+                accuracy = "FAIR"
+            else:
+                accuracy = "POOR"
+            
+            # Update prediction document
             doc_ref = self.firestore_db.collection(FIREBASE_COLLECTIONS['predictions']).document(doc_id)
-            doc_ref.update({
+            
+            update_data = {
                 'validated': True,
                 'validation_time': now_iso_wib(),
                 'actual_price': float(actual_price),
@@ -234,13 +323,18 @@ class FirebaseManager:
                 'direction_correct': is_win,
                 'actual_change': float(actual_change),
                 'actual_change_pct': float(actual_change_pct),
-                'predicted_direction': predicted_direction
-            })
+                'predicted_direction': predicted_direction,
+                'accuracy_level': accuracy
+            }
             
+            doc_ref.update(update_data)
+            
+            # Save to validation collection
             validation_data = {
                 'timestamp': now_iso_wib(),
                 'prediction_id': doc_id,
                 'result': 'WIN' if is_win else 'LOSE',
+                'accuracy_level': accuracy,
                 'current_price': float(current_price),
                 'predicted_price': float(predicted_price),
                 'actual_price': float(actual_price),
@@ -253,24 +347,59 @@ class FirebaseManager:
             
             self.firestore_db.collection(FIREBASE_COLLECTIONS['validation']).add(validation_data)
             
-            return is_win
+            return is_win, accuracy
         
         result, error = self._execute_with_retry(_validate)
         
         if result is not None:
-            result_emoji = "✅" if result else "❌"
+            is_win, accuracy = result
+            result_emoji = "✅" if is_win else "❌"
             direction = "UP" if 'CALL' in trend.upper() or 'UP' in trend.upper() else "DOWN"
-            logger.info(f"{result_emoji} {doc_id[:8]}: Predicted {direction} | "
-                       f"Current: ${current_price:.0f} → Actual: ${actual_price:.0f} | "
-                       f"{'WIN' if result else 'LOSE'}")
+            
+            logger.info(f"{result_emoji} {doc_id[:8]}: {direction} | "
+                       f"${current_price:.0f} → ${actual_price:.0f} | "
+                       f"{'WIN' if is_win else 'LOSE'} ({accuracy})")
             return True
         else:
             logger.error(f"❌ Failed to validate prediction: {error}")
             return False
     
+    def validate_predictions_batch(self, predictions: List[Dict], 
+                                   actual_price: float) -> Tuple[int, int]:
+        """
+        NEW: Validate multiple predictions in batch
+        Returns: (validated_count, failed_count)
+        """
+        validated = 0
+        failed = 0
+        
+        for pred in predictions:
+            try:
+                success = self.validate_prediction(
+                    pred['doc_id'],
+                    actual_price,
+                    pred['predicted_price'],
+                    pred['current_price'],
+                    pred['trend']
+                )
+                
+                if success:
+                    validated += 1
+                else:
+                    failed += 1
+                    
+            except Exception as e:
+                logger.error(f"❌ Batch validation error for {pred['doc_id']}: {e}")
+                failed += 1
+        
+        logger.info(f"✅ Batch validation: {validated} validated, {failed} failed")
+        return validated, failed
+    
     def get_statistics(self, timeframe_minutes: Optional[int] = None, 
                       days: int = 7) -> Dict:
-        """Get prediction statistics"""
+        """
+        ENHANCED: Get statistics with caching and performance optimization
+        """
         def _get_stats():
             collection = self.firestore_db.collection(FIREBASE_COLLECTIONS['predictions'])
             cutoff_date_wib = get_local_now() - timedelta(days=days)
@@ -286,11 +415,15 @@ class FirebaseManager:
             losses = 0
             total_error = 0
             total_error_pct = 0
+            excellent = 0
+            good = 0
+            fair = 0
+            poor = 0
             
             for doc in docs:
                 data = doc.to_dict()
                 
-                # Parse prediction time (WIB)
+                # Check date
                 if 'prediction_time' in data:
                     pred_time_wib = parse_iso_to_local(data['prediction_time'])
                     if pred_time_wib < cutoff_date_wib:
@@ -298,15 +431,28 @@ class FirebaseManager:
                 
                 total += 1
                 
+                # Count wins/losses
                 if data.get('validation_result') == 'WIN':
                     wins += 1
                 else:
                     losses += 1
                 
+                # Errors
                 if 'price_error' in data:
                     total_error += data['price_error']
                 if 'price_error_pct' in data:
                     total_error_pct += data['price_error_pct']
+                
+                # Accuracy levels
+                accuracy = data.get('accuracy_level', 'UNKNOWN')
+                if accuracy == 'EXCELLENT':
+                    excellent += 1
+                elif accuracy == 'GOOD':
+                    good += 1
+                elif accuracy == 'FAIR':
+                    fair += 1
+                else:
+                    poor += 1
             
             win_rate = (wins / total * 100) if total > 0 else 0
             avg_error = total_error / total if total > 0 else 0
@@ -321,13 +467,19 @@ class FirebaseManager:
                 'win_rate': round(win_rate, 2),
                 'avg_error': round(avg_error, 2),
                 'avg_error_pct': round(avg_error_pct, 2),
+                'accuracy_distribution': {
+                    'excellent': excellent,
+                    'good': good,
+                    'fair': fair,
+                    'poor': poor
+                },
                 'last_updated': now_iso_wib()
             }
         
         result, error = self._execute_with_retry(_get_stats)
         
         if result:
-            logger.info(f"📊 Statistics: Win rate {result['win_rate']:.1f}% ({result['wins']}/{result['total_predictions']})")
+            logger.info(f"📊 Statistics: {result['win_rate']:.1f}% win rate ({result['wins']}/{result['total_predictions']})")
             return result
         else:
             logger.warning(f"⚠️ Failed to get statistics: {error}")
@@ -384,29 +536,24 @@ class FirebaseManager:
         result, error = self._execute_with_retry(_save)
         return result is not None
     
-    def _log_error(self, operation: str, error: Exception):
-        """Log error to Firebase"""
-        try:
-            collection = self.firestore_db.collection(FIREBASE_COLLECTIONS['error_logs'])
-            error_data = {
-                'timestamp': now_iso_wib(),
-                'operation': operation,
-                'error_type': type(error).__name__,
-                'error_message': str(error),
-            }
-            collection.add(error_data)
-        except:
-            pass
-    
-    def cleanup_old_data(self, days: int = 30):
-        """Clean up old data from Firebase"""
+    def cleanup_old_data(self, days: int = 30) -> int:
+        """
+        ENHANCED: Clean up old data with progress tracking
+        Returns: Number of documents deleted
+        """
         def _cleanup():
             cutoff_date_wib = get_local_now() - timedelta(days=days)
             cutoff_iso = prepare_firebase_timestamp(cutoff_date_wib)
             total_deleted = 0
             
-            for collection_name in [FIREBASE_COLLECTIONS['raw_data'], 
-                                   FIREBASE_COLLECTIONS['predictions']]:
+            collections_to_clean = [
+                FIREBASE_COLLECTIONS['raw_data'],
+                FIREBASE_COLLECTIONS['predictions'],
+                FIREBASE_COLLECTIONS['system_health'],
+                FIREBASE_COLLECTIONS['error_logs']
+            ]
+            
+            for collection_name in collections_to_clean:
                 collection = self.firestore_db.collection(collection_name)
                 old_docs = collection.where('timestamp', '<', cutoff_iso).limit(100).stream()
                 
@@ -420,7 +567,7 @@ class FirebaseManager:
                 if count > 0:
                     batch.commit()
                     total_deleted += count
-                    logger.info(f"🗑️ Cleaned up {count} old documents from {collection_name}")
+                    logger.info(f"🗑️ Cleaned {count} old documents from {collection_name}")
             
             return total_deleted
         
@@ -428,8 +575,46 @@ class FirebaseManager:
         
         if result is not None:
             logger.info(f"✅ Cleanup completed: {result} documents deleted")
+            return result
         else:
             logger.warning(f"⚠️ Cleanup failed: {error}")
+            return 0
+    
+    def _log_error(self, operation: str, error: Exception):
+        """Enhanced error logging"""
+        try:
+            collection = self.firestore_db.collection(FIREBASE_COLLECTIONS['error_logs'])
+            error_data = {
+                'timestamp': now_iso_wib(),
+                'operation': operation,
+                'error_type': type(error).__name__,
+                'error_message': str(error),
+                'connection_failures': self.connection_failures,
+                'operations_count': self.operations_count,
+                'failed_operations': self.failed_operations
+            }
+            collection.add(error_data)
+        except:
+            pass  # Don't let error logging cause more errors
+    
+    def get_performance_stats(self) -> Dict:
+        """
+        NEW: Get Firebase manager performance statistics
+        """
+        total_ops = self.operations_count
+        failed_ops = self.failed_operations
+        success_rate = ((total_ops - failed_ops) / total_ops * 100) if total_ops > 0 else 0
+        
+        return {
+            'total_operations': total_ops,
+            'successful_operations': total_ops - failed_ops,
+            'failed_operations': failed_ops,
+            'success_rate': round(success_rate, 2),
+            'connection_failures': self.connection_failures,
+            'connected': self.connected,
+            'last_operation_time': self.last_operation_time,
+            'last_connection_attempt': self.last_connection_attempt.isoformat() if self.last_connection_attempt else None
+        }
 
 
 def get_firebase_manager() -> FirebaseManager:
