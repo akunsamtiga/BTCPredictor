@@ -430,10 +430,10 @@ def add_technical_indicators(df: pd.DataFrame) -> pd.DataFrame:
             
             # Strategy 1: Forward-fill (use last valid observation)
             numeric_columns = df.select_dtypes(include=[np.number]).columns
-            df[numeric_columns] = df[numeric_columns].fillna(method='ffill')
+            df[numeric_columns] = df[numeric_columns].ffill()
             
             # Strategy 2: Backward-fill remaining NaNs at start
-            df[numeric_columns] = df[numeric_columns].fillna(method='bfill')
+            df[numeric_columns] = df[numeric_columns].bfill()
             
             # Strategy 3: Fill any remaining with 0 (should be rare)
             remaining_nans = df.isnull().sum().sum()
