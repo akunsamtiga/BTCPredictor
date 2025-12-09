@@ -203,6 +203,9 @@ VPS_CONFIG = {
     'tf_num_threads': 2,
     'tf_inter_threads': 1,
     'tf_intra_threads': 2,
+    'use_minimal_features': True,
+    'max_rolling_windows': 3,
+
 }
 
 # Firebase Collections

@@ -347,7 +347,8 @@ def add_technical_indicators(df: pd.DataFrame) -> pd.DataFrame:
             df[f'roc_{period}'] = df['price'].pct_change(period) * 100
             
         # === ROLLING STATISTICS (Multiple Windows) ===
-        for window in [5, 10, 20, 50]:
+        windows = [5, 20, 50] if not VPS_CONFIG.get('use_minimal_features') else [10, 20]
+        for window in windows:
             df[f'rolling_mean_{window}'] = df['price'].rolling(window=window).mean()
             df[f'rolling_std_{window}'] = df['price'].rolling(window=window).std()
             df[f'rolling_var_{window}'] = df['price'].rolling(window=window).var()

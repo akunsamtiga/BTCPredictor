@@ -51,8 +51,9 @@ TimeoutStartSec=300
 TimeoutStopSec=60
 
 # Resource limits - Adjusted for VPS
-MemoryMax=3G
-MemoryHigh=2.5G
+MemoryMax=1.8G    
+MemoryHigh=1.5G      
+MemorySwapMax=2G     
 CPUQuota=150%
 
 # Nice level (lower priority than system services)
