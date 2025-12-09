@@ -223,133 +223,241 @@ def _parse_candles_to_dataframe(candles: list) -> pd.DataFrame:
 
 def add_technical_indicators(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Add optimized technical indicators
-    Focus on most predictive features
+    Add technical indicators - ADAPTIVE TO DATA SIZE
+    Only calculates indicators that fit within available data
     """
     try:
         df = df.copy()
         df = df.sort_values('datetime', ascending=True).reset_index(drop=True)
         
-        # Basic features
+        data_points = len(df)
+        logger.debug(f"Adding indicators for {data_points} data points")
+        
+        # Determine max periods based on data size
+        # Use at most 50% of available data for longest indicator
+        max_period = int(data_points * 0.5)
+        
+        # Basic features (always safe)
         df['returns'] = df['price'].pct_change()
         df['log_returns'] = np.log(df['price'] / df['price'].shift(1))
         
-        # Moving Averages (most important periods)
-        for window in [7, 14, 20, 50, 200]:
-            df[f'sma_{window}'] = df['price'].rolling(window=window).mean()
-            df[f'ema_{window}'] = df['price'].ewm(span=window, adjust=False).mean()
+        # ================================================================
+        # ADAPTIVE MOVING AVERAGES
+        # ================================================================
+        # Define periods based on data size
+        if data_points >= 400:
+            # Full set for large datasets
+            ma_periods = [7, 14, 20, 50, 200]
+        elif data_points >= 200:
+            # Medium datasets
+            ma_periods = [7, 14, 20, 50, 100]
+        elif data_points >= 100:
+            # Small datasets  
+            ma_periods = [5, 10, 20, 50]
+        else:
+            # Very small datasets
+            ma_periods = [5, 10, 20]
+        
+        # Filter to only periods that fit in data
+        ma_periods = [p for p in ma_periods if p < max_period]
+        
+        for window in ma_periods:
+            df[f'sma_{window}'] = df['price'].rolling(window=window, min_periods=window//2).mean()
+            df[f'ema_{window}'] = df['price'].ewm(span=window, adjust=False, min_periods=window//2).mean()
             df[f'price_to_sma_{window}'] = (df['price'] - df[f'sma_{window}']) / df['price']
         
+        # ================================================================
         # RSI (multiple periods)
-        for period in [7, 14, 21]:
-            delta = df['price'].diff()
-            gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
-            loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
-            rs = gain / loss
-            df[f'rsi_{period}'] = 100 - (100 / (1 + rs))
-            df[f'rsi_{period}_norm'] = (df[f'rsi_{period}'] - 50) / 50
+        # ================================================================
+        rsi_periods = [7, 14, 21] if data_points >= 50 else [7, 14]
         
-        # MACD
-        ema_12 = df['price'].ewm(span=12, adjust=False).mean()
-        ema_26 = df['price'].ewm(span=26, adjust=False).mean()
-        df['macd'] = ema_12 - ema_26
-        df['macd_signal'] = df['macd'].ewm(span=9, adjust=False).mean()
-        df['macd_hist'] = df['macd'] - df['macd_signal']
+        for period in rsi_periods:
+            if period < max_period:
+                delta = df['price'].diff()
+                gain = (delta.where(delta > 0, 0)).rolling(window=period, min_periods=period//2).mean()
+                loss = (-delta.where(delta < 0, 0)).rolling(window=period, min_periods=period//2).mean()
+                rs = gain / loss
+                df[f'rsi_{period}'] = 100 - (100 / (1 + rs))
+                df[f'rsi_{period}_norm'] = (df[f'rsi_{period}'] - 50) / 50
         
-        # Bollinger Bands
-        for window in [20, 50]:
-            df[f'bb_middle_{window}'] = df['price'].rolling(window=window).mean()
-            bb_std = df['price'].rolling(window=window).std()
-            df[f'bb_upper_{window}'] = df[f'bb_middle_{window}'] + (bb_std * 2)
-            df[f'bb_lower_{window}'] = df[f'bb_middle_{window}'] - (bb_std * 2)
-            df[f'bb_position_{window}'] = (df['price'] - df[f'bb_lower_{window}']) / (df[f'bb_upper_{window}'] - df[f'bb_lower_{window}'])
-            df[f'bb_width_{window}'] = (df[f'bb_upper_{window}'] - df[f'bb_lower_{window}']) / df[f'bb_middle_{window}']
+        # ================================================================
+        # MACD (if enough data)
+        # ================================================================
+        if data_points >= 52:  # Need at least 26*2
+            ema_12 = df['price'].ewm(span=12, adjust=False, min_periods=6).mean()
+            ema_26 = df['price'].ewm(span=26, adjust=False, min_periods=13).mean()
+            df['macd'] = ema_12 - ema_26
+            df['macd_signal'] = df['macd'].ewm(span=9, adjust=False, min_periods=4).mean()
+            df['macd_hist'] = df['macd'] - df['macd_signal']
         
-        # Stochastic
-        k_period = 14
-        low_k = df['low'].rolling(window=k_period).min()
-        high_k = df['high'].rolling(window=k_period).max()
-        df['stoch_k'] = 100 * ((df['price'] - low_k) / (high_k - low_k))
-        df['stoch_d'] = df['stoch_k'].rolling(window=3).mean()
+        # ================================================================
+        # BOLLINGER BANDS
+        # ================================================================
+        bb_periods = [20, 50] if data_points >= 100 else [20]
         
+        for window in bb_periods:
+            if window < max_period:
+                df[f'bb_middle_{window}'] = df['price'].rolling(window=window, min_periods=window//2).mean()
+                bb_std = df['price'].rolling(window=window, min_periods=window//2).std()
+                df[f'bb_upper_{window}'] = df[f'bb_middle_{window}'] + (bb_std * 2)
+                df[f'bb_lower_{window}'] = df[f'bb_middle_{window}'] - (bb_std * 2)
+                df[f'bb_position_{window}'] = (df['price'] - df[f'bb_lower_{window}']) / (df[f'bb_upper_{window}'] - df[f'bb_lower_{window}'])
+                df[f'bb_width_{window}'] = (df[f'bb_upper_{window}'] - df[f'bb_lower_{window}']) / df[f'bb_middle_{window}']
+        
+        # ================================================================
+        # STOCHASTIC (if enough data)
+        # ================================================================
+        if data_points >= 28:  # 14*2
+            k_period = 14
+            low_k = df['low'].rolling(window=k_period, min_periods=k_period//2).min()
+            high_k = df['high'].rolling(window=k_period, min_periods=k_period//2).max()
+            df['stoch_k'] = 100 * ((df['price'] - low_k) / (high_k - low_k))
+            df['stoch_d'] = df['stoch_k'].rolling(window=3, min_periods=2).mean()
+        
+        # ================================================================
         # ATR
-        for period in [14, 21]:
+        # ================================================================
+        atr_periods = [14, 21] if data_points >= 42 else [14]
+        
+        for period in atr_periods:
+            if period < max_period:
+                high_low = df['high'] - df['low']
+                high_close = np.abs(df['high'] - df['price'].shift())
+                low_close = np.abs(df['low'] - df['price'].shift())
+                ranges = pd.concat([high_low, high_close, low_close], axis=1)
+                true_range = ranges.max(axis=1)
+                df[f'atr_{period}'] = true_range.rolling(window=period, min_periods=period//2).mean()
+                df[f'atr_pct_{period}'] = df[f'atr_{period}'] / df['price']
+        
+        # ================================================================
+        # ADX (if enough data)
+        # ================================================================
+        if data_points >= 28:  # 14*2
+            period = 14
+            high_diff = df['high'].diff()
+            low_diff = -df['low'].diff()
+            
+            plus_dm = high_diff.where((high_diff > low_diff) & (high_diff > 0), 0)
+            minus_dm = low_diff.where((low_diff > high_diff) & (low_diff > 0), 0)
+            
             high_low = df['high'] - df['low']
             high_close = np.abs(df['high'] - df['price'].shift())
             low_close = np.abs(df['low'] - df['price'].shift())
-            ranges = pd.concat([high_low, high_close, low_close], axis=1)
-            true_range = ranges.max(axis=1)
-            df[f'atr_{period}'] = true_range.rolling(window=period).mean()
-            df[f'atr_pct_{period}'] = df[f'atr_{period}'] / df['price']
+            tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+            atr = tr.rolling(window=period, min_periods=period//2).mean()
+            
+            plus_di = 100 * (plus_dm.rolling(window=period, min_periods=period//2).mean() / atr)
+            minus_di = 100 * (minus_dm.rolling(window=period, min_periods=period//2).mean() / atr)
+            
+            dx = 100 * np.abs(plus_di - minus_di) / (plus_di + minus_di)
+            df['adx'] = dx.rolling(window=period, min_periods=period//2).mean()
+            df['plus_di'] = plus_di
+            df['minus_di'] = minus_di
         
-        # ADX
-        period = 14
-        high_diff = df['high'].diff()
-        low_diff = -df['low'].diff()
+        # ================================================================
+        # VOLUME INDICATORS
+        # ================================================================
+        vol_periods = [10, 20] if data_points >= 40 else [10]
         
-        plus_dm = high_diff.where((high_diff > low_diff) & (high_diff > 0), 0)
-        minus_dm = low_diff.where((low_diff > high_diff) & (low_diff > 0), 0)
+        for window in vol_periods:
+            if window < max_period:
+                df[f'volume_sma_{window}'] = df['volume'].rolling(window=window, min_periods=window//2).mean()
+                df[f'volume_ratio_{window}'] = df['volume'] / df[f'volume_sma_{window}']
         
-        high_low = df['high'] - df['low']
-        high_close = np.abs(df['high'] - df['price'].shift())
-        low_close = np.abs(df['low'] - df['price'].shift())
-        tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
-        atr = tr.rolling(window=period).mean()
+        if data_points >= 20:
+            df['obv'] = (np.sign(df['price'].diff()) * df['volume']).fillna(0).cumsum()
+            df['obv_ema'] = df['obv'].ewm(span=20, adjust=False, min_periods=10).mean()
         
-        plus_di = 100 * (plus_dm.rolling(window=period).mean() / atr)
-        minus_di = 100 * (minus_dm.rolling(window=period).mean() / atr)
+        # ================================================================
+        # MOMENTUM
+        # ================================================================
+        mom_periods = [10, 20] if data_points >= 40 else [10]
         
-        dx = 100 * np.abs(plus_di - minus_di) / (plus_di + minus_di)
-        df['adx'] = dx.rolling(window=period).mean()
-        df['plus_di'] = plus_di
-        df['minus_di'] = minus_di
+        for period in mom_periods:
+            if period < max_period:
+                df[f'momentum_{period}'] = df['price'] - df['price'].shift(period)
+                df[f'roc_{period}'] = df['price'].pct_change(period) * 100
         
-        # Volume indicators
-        for window in [10, 20]:
-            df[f'volume_sma_{window}'] = df['volume'].rolling(window=window).mean()
-            df[f'volume_ratio_{window}'] = df['volume'] / df[f'volume_sma_{window}']
+        # ================================================================
+        # ROLLING STATISTICS
+        # ================================================================
+        stat_periods = [10, 20] if data_points >= 40 else [10]
         
-        df['obv'] = (np.sign(df['price'].diff()) * df['volume']).fillna(0).cumsum()
-        df['obv_ema'] = df['obv'].ewm(span=20, adjust=False).mean()
+        for window in stat_periods:
+            if window < max_period:
+                df[f'rolling_std_{window}'] = df['price'].rolling(window=window, min_periods=window//2).std()
+                df[f'rolling_max_{window}'] = df['price'].rolling(window=window, min_periods=window//2).max()
+                df[f'rolling_min_{window}'] = df['price'].rolling(window=window, min_periods=window//2).min()
+                df[f'dist_from_max_{window}'] = (df[f'rolling_max_{window}'] - df['price']) / df['price']
+                df[f'dist_from_min_{window}'] = (df['price'] - df[f'rolling_min_{window}']) / df['price']
         
-        # Momentum
-        for period in [10, 20]:
-            df[f'momentum_{period}'] = df['price'] - df['price'].shift(period)
-            df[f'roc_{period}'] = df['price'].pct_change(period) * 100
-        
-        # Rolling statistics
-        for window in [10, 20]:
-            df[f'rolling_std_{window}'] = df['price'].rolling(window=window).std()
-            df[f'rolling_max_{window}'] = df['price'].rolling(window=window).max()
-            df[f'rolling_min_{window}'] = df['price'].rolling(window=window).min()
-            df[f'dist_from_max_{window}'] = (df[f'rolling_max_{window}'] - df['price']) / df['price']
-            df[f'dist_from_min_{window}'] = (df['price'] - df[f'rolling_min_{window}']) / df['price']
-        
-        # Price patterns
+        # ================================================================
+        # PRICE PATTERNS (always safe)
+        # ================================================================
         df['high_low_ratio'] = (df['high'] - df['low']) / df['price']
         df['close_position'] = (df['price'] - df['low']) / (df['high'] - df['low'])
         df['body_size'] = np.abs(df['price'] - df['open']) / df['price']
         
-        # Trend indicators
-        df['ma_cross_7_20'] = (df['sma_7'] > df['sma_20']).astype(int)
-        df['ma_diff_7_20'] = (df['sma_7'] - df['sma_20']) / df['price']
+        # ================================================================
+        # TREND INDICATORS
+        # ================================================================
+        if 'sma_7' in df.columns and 'sma_20' in df.columns:
+            df['ma_cross_7_20'] = (df['sma_7'] > df['sma_20']).astype(int)
+            df['ma_diff_7_20'] = (df['sma_7'] - df['sma_20']) / df['price']
         
-        # Volatility
-        for window in [10, 20]:
-            df[f'volatility_{window}'] = df['returns'].rolling(window=window).std()
+        # ================================================================
+        # VOLATILITY
+        # ================================================================
+        for window in stat_periods:
+            if window < max_period:
+                df[f'volatility_{window}'] = df['returns'].rolling(window=window, min_periods=window//2).std()
         
         # Market strength
-        df['trend_strength'] = np.abs(df['returns'].rolling(window=20).mean()) * 100
+        if data_points >= 20:
+            df['trend_strength'] = np.abs(df['returns'].rolling(window=20, min_periods=10).mean()) * 100
         
-        # Sort back
+        # ================================================================
+        # SMART NaN HANDLING - NO DATA LOSS
+        # ================================================================
+        before_fill = len(df)
+        
+        # Count NaNs before filling
+        nan_counts = df.isnull().sum()
+        total_nans = nan_counts.sum()
+        
+        if total_nans > 0:
+            logger.debug(f"Filling {total_nans} NaN values across {(nan_counts > 0).sum()} columns")
+            
+            # Strategy 1: Forward-fill (use last valid observation)
+            numeric_columns = df.select_dtypes(include=[np.number]).columns
+            df[numeric_columns] = df[numeric_columns].fillna(method='ffill')
+            
+            # Strategy 2: Backward-fill remaining NaNs at start
+            df[numeric_columns] = df[numeric_columns].fillna(method='bfill')
+            
+            # Strategy 3: Fill any remaining with 0 (should be rare)
+            remaining_nans = df.isnull().sum().sum()
+            if remaining_nans > 0:
+                logger.debug(f"Filling {remaining_nans} remaining NaNs with 0")
+                df = df.fillna(0)
+        
+        # Sort back to most recent first
         df = df.sort_values('datetime', ascending=False).reset_index(drop=True)
+        
+        after_fill = len(df)
+        
+        if after_fill != before_fill:
+            logger.warning(f"⚠️ Data loss: {before_fill} → {after_fill} points")
+        else:
+            logger.info(f"✅ Indicators added: {after_fill} points (100% retained)")
         
         return df
         
     except Exception as e:
         logger.error(f"❌ Error adding indicators: {e}")
+        import traceback
+        traceback.print_exc()
         return df
-
 
 # ============================================================================
 # PREDICTOR CLASS
