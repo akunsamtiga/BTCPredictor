@@ -454,7 +454,7 @@ class ImprovedScheduler:
             logger.info(f"💾 Memory before training: {mem_before:.0f}MB")
             
             # Train with cleaned data
-            success = self.predictor.train_models(df_clean, epochs=20, batch_size=32)
+            success = self.predictor.train_models(df_clean, epochs=30, batch_size=48)
             
             mem_after = self._check_memory()
             logger.info(f"💾 Memory after training: {mem_after:.0f}MB")

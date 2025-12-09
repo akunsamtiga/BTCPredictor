@@ -24,7 +24,7 @@ import requests
 import time
 from collections import deque
 
-from config import MODEL_CONFIG, DATA_CONFIG, get_timeframe_category, get_min_confidence
+from config import MODEL_CONFIG, DATA_CONFIG, VPS_CONFIG, get_timeframe_category, get_min_confidence
 from sklearn.model_selection import TimeSeriesSplit
 from sklearn.metrics import accuracy_score, mean_squared_error, mean_absolute_error
 
