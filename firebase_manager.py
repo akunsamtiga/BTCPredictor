@@ -147,44 +147,44 @@ class FirebaseManager:
         """
         FIXED: Save prediction with NumPy type conversion
         """
+        # CRITICAL FIX: Convert NumPy types BEFORE the nested function
+        prediction_clean = convert_numpy_types(prediction)
+        
         def _save():
             collection = self.firestore_db.collection(FIREBASE_COLLECTIONS['predictions'])
             
             # Validate prediction data
             required_fields = ['current_price', 'predicted_price', 'timeframe_minutes', 'trend', 'confidence']
             for field in required_fields:
-                if field not in prediction:
+                if field not in prediction_clean:
                     raise ValueError(f"Missing required field: {field}")
-            
-            # CRITICAL FIX: Convert NumPy types to native Python types
-            prediction = convert_numpy_types(prediction)
             
             # Prepare timestamps
             now_wib = get_local_now()
-            target_time_wib = add_minutes_local(now_wib, prediction['timeframe_minutes'])
+            target_time_wib = add_minutes_local(now_wib, prediction_clean['timeframe_minutes'])
             
-            # Build document
+            # Build document (data already cleaned)
             doc_data = {
                 'timestamp': now_iso_wib(),
                 'prediction_time': prepare_firebase_timestamp(now_wib),
-                'timeframe_minutes': int(prediction['timeframe_minutes']),
-                'current_price': float(prediction['current_price']),
-                'predicted_price': float(prediction['predicted_price']),
-                'price_change': float(prediction['price_change']),
-                'price_change_pct': float(prediction['price_change_pct']),
-                'price_range_low': float(prediction.get('price_range_low', 0)),
-                'price_range_high': float(prediction.get('price_range_high', 0)),
-                'trend': str(prediction['trend']),
-                'confidence': float(prediction['confidence']),
-                'quality_score': float(prediction.get('quality_score', 0)),
-                'method': str(prediction.get('method', 'ML Ensemble')),
+                'timeframe_minutes': int(prediction_clean['timeframe_minutes']),
+                'current_price': float(prediction_clean['current_price']),
+                'predicted_price': float(prediction_clean['predicted_price']),
+                'price_change': float(prediction_clean['price_change']),
+                'price_change_pct': float(prediction_clean['price_change_pct']),
+                'price_range_low': float(prediction_clean.get('price_range_low', 0)),
+                'price_range_high': float(prediction_clean.get('price_range_high', 0)),
+                'trend': str(prediction_clean['trend']),
+                'confidence': float(prediction_clean['confidence']),
+                'quality_score': float(prediction_clean.get('quality_score', 0)),
+                'method': str(prediction_clean.get('method', 'ML Ensemble')),
                 'target_time': prepare_firebase_timestamp(target_time_wib),
                 'validated': False,
                 'validation_result': None,
                 'actual_price': None,
             }
             
-            # Add optional fields with type conversion
+            # Add optional fields (already converted)
             optional_fields = [
                 'model_agreement', 'lstm_prediction', 'gb_prediction', 
                 'rf_direction', 'rf_confidence', 'all_models_agree',
@@ -192,11 +192,11 @@ class FirebaseManager:
             ]
             
             for field in optional_fields:
-                if field in prediction:
-                    value = prediction[field]
+                if field in prediction_clean:
+                    value = prediction_clean[field]
                     # Convert to appropriate type
                     if field == 'all_models_agree':
-                        doc_data[field] = bool(value)  # Ensure native Python bool
+                        doc_data[field] = bool(value)
                     elif field in ['model_agreement', 'lstm_prediction', 'gb_prediction', 
                                  'rf_confidence', 'volatility']:
                         doc_data[field] = float(value)
@@ -205,7 +205,7 @@ class FirebaseManager:
                     elif field == 'category':
                         doc_data[field] = str(value)
                     else:
-                        doc_data[field] = convert_numpy_types(value)
+                        doc_data[field] = value
             
             doc_ref = collection.add(doc_data)
             return doc_ref[1].id
@@ -213,7 +213,7 @@ class FirebaseManager:
         result, error = self._execute_with_retry(_save)
         
         if result:
-            logger.info(f"✅ Prediction saved: {result} (TF: {prediction['timeframe_minutes']}min)")
+            logger.info(f"✅ Prediction saved: {result} (TF: {prediction_clean['timeframe_minutes']}min)")
             return result
         else:
             logger.error(f"❌ Failed to save prediction: {error}")
