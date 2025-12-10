@@ -763,13 +763,7 @@ class ImprovedBitcoinPredictor:
         try:
             category = get_timeframe_category(timeframe_minutes)
             
-            seq_length_map = {
-                'ultra_short': MODEL_CONFIG['lstm'].get('ultra_short_sequence', 30),
-                'short': MODEL_CONFIG['lstm'].get('short_sequence', 60),
-                'medium': MODEL_CONFIG['lstm'].get('medium_sequence', 80),
-                'long': MODEL_CONFIG['lstm'].get('long_sequence', 100)
-            }
-            sequence_length = seq_length_map.get(category, self.sequence_length)
+            sequence_length = self.sequence_length  # Selalu 60!
             
             df_clean = df.dropna().copy()
             df_clean = df_clean.sort_values('datetime', ascending=True).reset_index(drop=True)
