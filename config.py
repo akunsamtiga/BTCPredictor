@@ -80,9 +80,9 @@ PREDICTION_CONFIG = {
             'min_points': 150   # ✅ Already sufficient
         },
         'long': {
-            'days': 120,        # ⬆️ INCREASED from 60 to 120
+            'days': 180,        # ⬆️ INCREASED from 60 to 120
             'interval': 'day',
-            'min_points': 90    # ⬆️ INCREASED from 50 to 90
+            'min_points': 150    # ⬆️ INCREASED from 50 to 90
             # This meets sequence_length (60) + 30 requirement
         }
     },
