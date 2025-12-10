@@ -1,6 +1,6 @@
 """
 Configuration for Bitcoin Predictor
-OPTIMIZED for consistent predictions with FIXED feature engineering
+FIXED VERSION - Consistent predictions with proper data requirements
 """
 
 import os
@@ -35,7 +35,7 @@ FIREBASE_CONFIG = {
     'connection_timeout': 30
 }
 
-# Prediction Configuration - FIXED: Lower requirements for consistent features
+# Prediction Configuration - FIXED: Proper data requirements
 PREDICTION_CONFIG = {
     # Timeframes by category (minutes)
     'ultra_short_timeframes': [5, 10, 15],
@@ -51,7 +51,7 @@ PREDICTION_CONFIG = {
         720, 1440       # Long
     ],
     
-    # OPTIMIZED: Lower thresholds for consistent predictions
+    # Confidence thresholds
     'min_confidence': {
         'ultra_short': int(os.getenv('MIN_CONFIDENCE_ULTRA_SHORT', 40)),
         'short': int(os.getenv('MIN_CONFIDENCE_SHORT', 38)),
@@ -59,28 +59,31 @@ PREDICTION_CONFIG = {
         'long': int(os.getenv('MIN_CONFIDENCE_LONG', 32))
     },
     
-    # FIXED: Data requirements - Optimized for consistent features
-    # All require >= 100 points for consistent feature engineering
+    # ================================================================
+    # FIXED: Data requirements - Ensures ALL features are available
+    # ================================================================
     'data_requirements': {
         'ultra_short': {
-            'days': 3,          # ~4300 minutes = enough for all features
+            'days': 3,          # ~4320 minutes
             'interval': 'minute',
-            'min_points': 150   # Lowered for consistent features
+            'min_points': 150   # ✅ Sufficient for all features including sma_50
         },
         'short': {
-            'days': 5,          # ~120 hours
+            'days': 7,          # ⬆️ INCREASED from 5 to 7 (~168 hours)
             'interval': 'hour',
-            'min_points': 100   # Lowered - base features work
+            'min_points': 150   # ⬆️ INCREASED from 100 to 150
+            # This ensures price_to_sma_50 feature is available
         },
         'medium': {
             'days': 10,         # ~240 hours
             'interval': 'hour',
-            'min_points': 150   # Need more for accuracy
+            'min_points': 150   # ✅ Already sufficient
         },
         'long': {
-            'days': 60,         # ~60 days
+            'days': 120,        # ⬆️ INCREASED from 60 to 120
             'interval': 'day',
-            'min_points': 50    # Daily data needs less points
+            'min_points': 90    # ⬆️ INCREASED from 50 to 90
+            # This meets sequence_length (60) + 30 requirement
         }
     },
     
