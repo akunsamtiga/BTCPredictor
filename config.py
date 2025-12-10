@@ -1,6 +1,6 @@
 """
 Configuration for Bitcoin Predictor
-OPTIMIZED for consistent predictions with quality
+OPTIMIZED for consistent predictions with FIXED feature engineering
 """
 
 import os
@@ -35,7 +35,7 @@ FIREBASE_CONFIG = {
     'connection_timeout': 30
 }
 
-# Prediction Configuration
+# Prediction Configuration - FIXED: Lower requirements for consistent features
 PREDICTION_CONFIG = {
     # Timeframes by category (minutes)
     'ultra_short_timeframes': [5, 10, 15],
@@ -59,27 +59,28 @@ PREDICTION_CONFIG = {
         'long': int(os.getenv('MIN_CONFIDENCE_LONG', 32))
     },
     
-    # Data requirements - OPTIMIZED for all timeframes
+    # FIXED: Data requirements - Optimized for consistent features
+    # All require >= 100 points for consistent feature engineering
     'data_requirements': {
         'ultra_short': {
-            'days': 2,
+            'days': 3,          # ~4300 minutes = enough for all features
             'interval': 'minute',
-            'min_points': 200  # Reduced from 400
+            'min_points': 150   # Lowered for consistent features
         },
         'short': {
-            'days': 3,
+            'days': 5,          # ~120 hours
             'interval': 'hour',
-            'min_points': 60   # Reduced from 100
+            'min_points': 100   # Lowered - base features work
         },
         'medium': {
-            'days': 7,         # Reduced from 10
+            'days': 10,         # ~240 hours
             'interval': 'hour',
-            'min_points': 100  # Reduced from 150
+            'min_points': 150   # Need more for accuracy
         },
         'long': {
-            'days': 30,        # Reduced from 45
+            'days': 60,         # ~60 days
             'interval': 'day',
-            'min_points': 50   # Reduced from 90
+            'min_points': 50    # Daily data needs less points
         }
     },
     

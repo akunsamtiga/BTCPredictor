@@ -1,6 +1,6 @@
 """
-Bitcoin Price Predictor - FIXED: ALWAYS PREDICT MODE
-GUARANTEED predictions with quality assessment
+Bitcoin Price Predictor - FIXED: CONSISTENT FEATURES
+GUARANTEED predictions with consistent feature engineering
 Target: High accuracy with consistent output
 """
 
@@ -218,13 +218,13 @@ def _parse_candles_to_dataframe(candles: list) -> pd.DataFrame:
 
 
 # ============================================================================
-# OPTIMIZED FEATURE ENGINEERING
+# FIXED: CONSISTENT FEATURE ENGINEERING
 # ============================================================================
 
 def add_technical_indicators(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Add technical indicators - ADAPTIVE TO DATA SIZE
-    Only calculates indicators that fit within available data
+    FIXED: Add technical indicators with CONSISTENT FEATURES
+    Always produces the same features regardless of data size
     """
     try:
         df = df.copy()
@@ -233,46 +233,43 @@ def add_technical_indicators(df: pd.DataFrame) -> pd.DataFrame:
         data_points = len(df)
         logger.debug(f"Adding indicators for {data_points} data points")
         
-        # Determine max periods based on data size
-        # Use at most 50% of available data for longest indicator
-        max_period = int(data_points * 0.5)
-        
         # Basic features (always safe)
         df['returns'] = df['price'].pct_change()
         df['log_returns'] = np.log(df['price'] / df['price'].shift(1))
         
         # ================================================================
-        # ADAPTIVE MOVING AVERAGES
+        # FIXED: CONSISTENT MOVING AVERAGES
+        # Always use these specific periods
         # ================================================================
-        # Define periods based on data size
-        if data_points >= 400:
-            # Full set for large datasets
-            ma_periods = [7, 14, 20, 50, 200]
-        elif data_points >= 200:
-            # Medium datasets
-            ma_periods = [7, 14, 20, 50, 100]
-        elif data_points >= 100:
-            # Small datasets  
-            ma_periods = [5, 10, 20, 50]
-        else:
-            # Very small datasets
-            ma_periods = [5, 10, 20]
+        base_ma_periods = [7, 14, 20]  # ALWAYS available
+        extended_ma_periods = [50]      # Only for larger datasets
         
-        # Filter to only periods that fit in data
-        ma_periods = [p for p in ma_periods if p < max_period]
+        # Add base MAs (works with 100+ points)
+        for window in base_ma_periods:
+            if data_points >= window * 2:  # Need at least 2x window size
+                df[f'sma_{window}'] = df['price'].rolling(window=window, min_periods=window//2).mean()
+                df[f'ema_{window}'] = df['price'].ewm(span=window, adjust=False, min_periods=window//2).mean()
+                df[f'price_to_sma_{window}'] = (df['price'] - df[f'sma_{window}']) / df['price']
         
-        for window in ma_periods:
-            df[f'sma_{window}'] = df['price'].rolling(window=window, min_periods=window//2).mean()
-            df[f'ema_{window}'] = df['price'].ewm(span=window, adjust=False, min_periods=window//2).mean()
-            df[f'price_to_sma_{window}'] = (df['price'] - df[f'sma_{window}']) / df['price']
+        # Add extended MAs (only for larger datasets)
+        if data_points >= 150:
+            for window in extended_ma_periods:
+                df[f'sma_{window}'] = df['price'].rolling(window=window, min_periods=window//2).mean()
+                df[f'ema_{window}'] = df['price'].ewm(span=window, adjust=False, min_periods=window//2).mean()
+                df[f'price_to_sma_{window}'] = (df['price'] - df[f'sma_{window}']) / df['price']
+        
+        # MA cross (if both exist)
+        if 'sma_7' in df.columns and 'sma_20' in df.columns:
+            df['ma_cross_7_20'] = (df['sma_7'] > df['sma_20']).astype(int)
+            df['ma_diff_7_20'] = (df['sma_7'] - df['sma_20']) / df['price']
         
         # ================================================================
-        # RSI (multiple periods)
+        # RSI - CONSISTENT PERIODS
         # ================================================================
-        rsi_periods = [7, 14, 21] if data_points >= 50 else [7, 14]
+        rsi_periods = [14, 21]
         
         for period in rsi_periods:
-            if period < max_period:
+            if data_points >= period * 2:
                 delta = df['price'].diff()
                 gain = (delta.where(delta > 0, 0)).rolling(window=period, min_periods=period//2).mean()
                 loss = (-delta.where(delta < 0, 0)).rolling(window=period, min_periods=period//2).mean()
@@ -281,9 +278,9 @@ def add_technical_indicators(df: pd.DataFrame) -> pd.DataFrame:
                 df[f'rsi_{period}_norm'] = (df[f'rsi_{period}'] - 50) / 50
         
         # ================================================================
-        # MACD (if enough data)
+        # MACD
         # ================================================================
-        if data_points >= 52:  # Need at least 26*2
+        if data_points >= 52:
             ema_12 = df['price'].ewm(span=12, adjust=False, min_periods=6).mean()
             ema_26 = df['price'].ewm(span=26, adjust=False, min_periods=13).mean()
             df['macd'] = ema_12 - ema_26
@@ -291,23 +288,21 @@ def add_technical_indicators(df: pd.DataFrame) -> pd.DataFrame:
             df['macd_hist'] = df['macd'] - df['macd_signal']
         
         # ================================================================
-        # BOLLINGER BANDS
+        # BOLLINGER BANDS - CONSISTENT PERIOD
         # ================================================================
-        bb_periods = [20, 50] if data_points >= 100 else [20]
-        
-        for window in bb_periods:
-            if window < max_period:
-                df[f'bb_middle_{window}'] = df['price'].rolling(window=window, min_periods=window//2).mean()
-                bb_std = df['price'].rolling(window=window, min_periods=window//2).std()
-                df[f'bb_upper_{window}'] = df[f'bb_middle_{window}'] + (bb_std * 2)
-                df[f'bb_lower_{window}'] = df[f'bb_middle_{window}'] - (bb_std * 2)
-                df[f'bb_position_{window}'] = (df['price'] - df[f'bb_lower_{window}']) / (df[f'bb_upper_{window}'] - df[f'bb_lower_{window}'])
-                df[f'bb_width_{window}'] = (df[f'bb_upper_{window}'] - df[f'bb_lower_{window}']) / df[f'bb_middle_{window}']
+        bb_period = 20
+        if data_points >= bb_period * 2:
+            df[f'bb_middle_{bb_period}'] = df['price'].rolling(window=bb_period, min_periods=bb_period//2).mean()
+            bb_std = df['price'].rolling(window=bb_period, min_periods=bb_period//2).std()
+            df[f'bb_upper_{bb_period}'] = df[f'bb_middle_{bb_period}'] + (bb_std * 2)
+            df[f'bb_lower_{bb_period}'] = df[f'bb_middle_{bb_period}'] - (bb_std * 2)
+            df[f'bb_position_{bb_period}'] = (df['price'] - df[f'bb_lower_{bb_period}']) / (df[f'bb_upper_{bb_period}'] - df[f'bb_lower_{bb_period}'])
+            df[f'bb_width_{bb_period}'] = (df[f'bb_upper_{bb_period}'] - df[f'bb_lower_{bb_period}']) / df[f'bb_middle_{bb_period}']
         
         # ================================================================
-        # STOCHASTIC (if enough data)
+        # STOCHASTIC
         # ================================================================
-        if data_points >= 28:  # 14*2
+        if data_points >= 28:
             k_period = 14
             low_k = df['low'].rolling(window=k_period, min_periods=k_period//2).min()
             high_k = df['high'].rolling(window=k_period, min_periods=k_period//2).max()
@@ -315,24 +310,22 @@ def add_technical_indicators(df: pd.DataFrame) -> pd.DataFrame:
             df['stoch_d'] = df['stoch_k'].rolling(window=3, min_periods=2).mean()
         
         # ================================================================
-        # ATR
+        # ATR - CONSISTENT PERIOD
         # ================================================================
-        atr_periods = [14, 21] if data_points >= 42 else [14]
-        
-        for period in atr_periods:
-            if period < max_period:
-                high_low = df['high'] - df['low']
-                high_close = np.abs(df['high'] - df['price'].shift())
-                low_close = np.abs(df['low'] - df['price'].shift())
-                ranges = pd.concat([high_low, high_close, low_close], axis=1)
-                true_range = ranges.max(axis=1)
-                df[f'atr_{period}'] = true_range.rolling(window=period, min_periods=period//2).mean()
-                df[f'atr_pct_{period}'] = df[f'atr_{period}'] / df['price']
+        atr_period = 14
+        if data_points >= atr_period * 2:
+            high_low = df['high'] - df['low']
+            high_close = np.abs(df['high'] - df['price'].shift())
+            low_close = np.abs(df['low'] - df['price'].shift())
+            ranges = pd.concat([high_low, high_close, low_close], axis=1)
+            true_range = ranges.max(axis=1)
+            df[f'atr_{atr_period}'] = true_range.rolling(window=atr_period, min_periods=atr_period//2).mean()
+            df[f'atr_pct_{atr_period}'] = df[f'atr_{atr_period}'] / df['price']
         
         # ================================================================
-        # ADX (if enough data)
+        # ADX
         # ================================================================
-        if data_points >= 28:  # 14*2
+        if data_points >= 28:
             period = 14
             high_diff = df['high'].diff()
             low_diff = -df['low'].diff()
@@ -355,41 +348,37 @@ def add_technical_indicators(df: pd.DataFrame) -> pd.DataFrame:
             df['minus_di'] = minus_di
         
         # ================================================================
-        # VOLUME INDICATORS
+        # VOLUME INDICATORS - CONSISTENT PERIOD
         # ================================================================
-        vol_periods = [10, 20] if data_points >= 40 else [10]
-        
-        for window in vol_periods:
-            if window < max_period:
-                df[f'volume_sma_{window}'] = df['volume'].rolling(window=window, min_periods=window//2).mean()
-                df[f'volume_ratio_{window}'] = df['volume'] / df[f'volume_sma_{window}']
+        vol_period = 20
+        if data_points >= vol_period * 2:
+            df[f'volume_sma_{vol_period}'] = df['volume'].rolling(window=vol_period, min_periods=vol_period//2).mean()
+            df[f'volume_ratio_{vol_period}'] = df['volume'] / df[f'volume_sma_{vol_period}']
         
         if data_points >= 20:
             df['obv'] = (np.sign(df['price'].diff()) * df['volume']).fillna(0).cumsum()
             df['obv_ema'] = df['obv'].ewm(span=20, adjust=False, min_periods=10).mean()
         
         # ================================================================
-        # MOMENTUM
+        # MOMENTUM - CONSISTENT PERIODS
         # ================================================================
-        mom_periods = [10, 20] if data_points >= 40 else [10]
-        
+        mom_periods = [10, 20]
         for period in mom_periods:
-            if period < max_period:
+            if data_points >= period * 2:
                 df[f'momentum_{period}'] = df['price'] - df['price'].shift(period)
                 df[f'roc_{period}'] = df['price'].pct_change(period) * 100
         
         # ================================================================
-        # ROLLING STATISTICS
+        # ROLLING STATISTICS - CONSISTENT PERIOD
         # ================================================================
-        stat_periods = [10, 20] if data_points >= 40 else [10]
-        
-        for window in stat_periods:
-            if window < max_period:
-                df[f'rolling_std_{window}'] = df['price'].rolling(window=window, min_periods=window//2).std()
-                df[f'rolling_max_{window}'] = df['price'].rolling(window=window, min_periods=window//2).max()
-                df[f'rolling_min_{window}'] = df['price'].rolling(window=window, min_periods=window//2).min()
-                df[f'dist_from_max_{window}'] = (df[f'rolling_max_{window}'] - df['price']) / df['price']
-                df[f'dist_from_min_{window}'] = (df['price'] - df[f'rolling_min_{window}']) / df['price']
+        stat_period = 20
+        if data_points >= stat_period * 2:
+            df[f'rolling_std_{stat_period}'] = df['price'].rolling(window=stat_period, min_periods=stat_period//2).std()
+            df[f'rolling_max_{stat_period}'] = df['price'].rolling(window=stat_period, min_periods=stat_period//2).max()
+            df[f'rolling_min_{stat_period}'] = df['price'].rolling(window=stat_period, min_periods=stat_period//2).min()
+            df[f'dist_from_max_{stat_period}'] = (df[f'rolling_max_{stat_period}'] - df['price']) / df['price']
+            df[f'dist_from_min_{stat_period}'] = (df['price'] - df[f'rolling_min_{stat_period}']) / df['price']
+            df[f'volatility_{stat_period}'] = df['returns'].rolling(window=stat_period, min_periods=stat_period//2).std()
         
         # ================================================================
         # PRICE PATTERNS (always safe)
@@ -397,20 +386,6 @@ def add_technical_indicators(df: pd.DataFrame) -> pd.DataFrame:
         df['high_low_ratio'] = (df['high'] - df['low']) / df['price']
         df['close_position'] = (df['price'] - df['low']) / (df['high'] - df['low'])
         df['body_size'] = np.abs(df['price'] - df['open']) / df['price']
-        
-        # ================================================================
-        # TREND INDICATORS
-        # ================================================================
-        if 'sma_7' in df.columns and 'sma_20' in df.columns:
-            df['ma_cross_7_20'] = (df['sma_7'] > df['sma_20']).astype(int)
-            df['ma_diff_7_20'] = (df['sma_7'] - df['sma_20']) / df['price']
-        
-        # ================================================================
-        # VOLATILITY
-        # ================================================================
-        for window in stat_periods:
-            if window < max_period:
-                df[f'volatility_{window}'] = df['returns'].rolling(window=window, min_periods=window//2).std()
         
         # Market strength
         if data_points >= 20:
@@ -421,25 +396,14 @@ def add_technical_indicators(df: pd.DataFrame) -> pd.DataFrame:
         # ================================================================
         before_fill = len(df)
         
-        # Count NaNs before filling
-        nan_counts = df.isnull().sum()
-        total_nans = nan_counts.sum()
+        numeric_columns = df.select_dtypes(include=[np.number]).columns
+        df[numeric_columns] = df[numeric_columns].ffill()
+        df[numeric_columns] = df[numeric_columns].bfill()
         
-        if total_nans > 0:
-            logger.debug(f"Filling {total_nans} NaN values across {(nan_counts > 0).sum()} columns")
-            
-            # Strategy 1: Forward-fill (use last valid observation)
-            numeric_columns = df.select_dtypes(include=[np.number]).columns
-            df[numeric_columns] = df[numeric_columns].ffill()
-            
-            # Strategy 2: Backward-fill remaining NaNs at start
-            df[numeric_columns] = df[numeric_columns].bfill()
-            
-            # Strategy 3: Fill any remaining with 0 (should be rare)
-            remaining_nans = df.isnull().sum().sum()
-            if remaining_nans > 0:
-                logger.debug(f"Filling {remaining_nans} remaining NaNs with 0")
-                df = df.fillna(0)
+        remaining_nans = df.isnull().sum().sum()
+        if remaining_nans > 0:
+            logger.debug(f"Filling {remaining_nans} remaining NaNs with 0")
+            df = df.fillna(0)
         
         # Sort back to most recent first
         df = df.sort_values('datetime', ascending=False).reset_index(drop=True)
@@ -466,6 +430,7 @@ def add_technical_indicators(df: pd.DataFrame) -> pd.DataFrame:
 class ImprovedBitcoinPredictor:
     """
     FIXED: Always Predict with Quality Assessment
+    Consistent feature engineering
     """
     
     def __init__(self):
@@ -483,10 +448,14 @@ class ImprovedBitcoinPredictor:
         logger.info("🤖 Predictor initialized (Always Predict Mode)")
     
     def prepare_features(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Select best predictive features"""
+        """
+        FIXED: Select consistent predictive features
+        Only uses features that will ALWAYS be available
+        """
         
+        # FIXED: Core features that should always exist
         priority_features = [
-            # Core indicators
+            # Core indicators (always should exist if data >= 100 points)
             'rsi_14', 'rsi_14_norm', 'rsi_21',
             'macd', 'macd_signal', 'macd_hist',
             'bb_position_20', 'bb_width_20',
@@ -495,9 +464,12 @@ class ImprovedBitcoinPredictor:
             'adx', 'plus_di', 'minus_di',
             'volume_ratio_20', 'obv_ema',
             
-            # Moving averages
-            'price_to_sma_7', 'price_to_sma_14', 'price_to_sma_20', 'price_to_sma_50',
+            # Moving averages (core)
+            'price_to_sma_7', 'price_to_sma_14', 'price_to_sma_20',
             'ma_diff_7_20',
+            
+            # Extended MA (optional - may not exist in small datasets)
+            'price_to_sma_50',
             
             # Momentum
             'roc_10', 'roc_20', 'momentum_10',
@@ -512,10 +484,17 @@ class ImprovedBitcoinPredictor:
             'trend_strength',
         ]
         
+        # Only use features that actually exist in DataFrame
         available = [col for col in priority_features if col in df.columns]
         
+        if len(available) < len(priority_features):
+            missing = set(priority_features) - set(available)
+            logger.debug(f"📊 Using {len(available)}/{len(priority_features)} features")
+            logger.debug(f"   Missing (ok): {missing}")
+        else:
+            logger.debug(f"📊 Using {len(available)} features (all available)")
+        
         self.feature_columns = available
-        logger.debug(f"📊 Using {len(available)} features")
         
         return df[available].copy()
     
@@ -604,6 +583,9 @@ class ImprovedBitcoinPredictor:
             
             features = self.prepare_features(df_clean)
             target = df_clean['price'].values
+            
+            logger.info(f"📊 Features prepared: {len(features.columns)} columns")
+            logger.info(f"   {features.columns.tolist()}")
             
             scaled_features = self.feature_scaler.fit_transform(features)
             scaled_target = self.price_scaler.fit_transform(target.reshape(-1, 1)).flatten()
@@ -772,14 +754,6 @@ class ImprovedBitcoinPredictor:
     def predict(self, df: pd.DataFrame, timeframe_minutes: int, always_predict: bool = False) -> Optional[Dict]:
         """
         FIXED: ALWAYS PREDICT with quality assessment
-        
-        Args:
-            df: DataFrame with price data
-            timeframe_minutes: Prediction timeframe
-            always_predict: If True, GUARANTEES a prediction
-        
-        Returns:
-            Prediction dict or None (only if data insufficient)
         """
         
         if not self.is_trained:
@@ -789,7 +763,6 @@ class ImprovedBitcoinPredictor:
         try:
             category = get_timeframe_category(timeframe_minutes)
             
-            # Get sequence length for category
             seq_length_map = {
                 'ultra_short': MODEL_CONFIG['lstm'].get('ultra_short_sequence', 30),
                 'short': MODEL_CONFIG['lstm'].get('short_sequence', 60),
@@ -807,6 +780,21 @@ class ImprovedBitcoinPredictor:
                 return None
             
             features = self.prepare_features(df_clean)
+            
+            # Check feature mismatch
+            if set(features.columns) != set(self.feature_columns):
+                missing = set(self.feature_columns) - set(features.columns)
+                extra = set(features.columns) - set(self.feature_columns)
+                
+                if missing:
+                    logger.error(f"❌ Missing features: {missing}")
+                    logger.error("   Model needs retraining with current feature set!")
+                    return None
+                
+                if extra:
+                    logger.debug(f"   Extra features ignored: {extra}")
+                    features = features[self.feature_columns]
+            
             scaled_features = self.feature_scaler.transform(features)
             
             current_price = df_clean.iloc[-1]['price']
@@ -830,42 +818,31 @@ class ImprovedBitcoinPredictor:
             
             # === SMART ENSEMBLE ===
             
-            # Dynamic weights based on category
             weights = self._get_weights(category)
-            
-            # Time adjustment
             time_factor = self._get_time_factor(timeframe_minutes, category)
             
-            # Calculate changes
             lstm_change = (lstm_pred - current_price) * time_factor
             gb_change = (gb_pred - current_price) * time_factor
             
-            # FIXED: Base ensemble WITHOUT RF bias
             base_ensemble = (
                 weights['lstm'] * lstm_change +
                 weights['gb'] * gb_change
             )
             
-            # FIXED: RF adjustment - respect RF direction properly
             rf_adjustment = 1.0
-            if rf_direction == 1:  # Bullish
-                # If RF says UP with high confidence, increase bullish bias
-                rf_adjustment = 1.0 + ((rf_confidence - 50) / 150)  # Max +0.33
-            else:  # Bearish (rf_direction == 0)
-                # If RF says DOWN with high confidence, increase bearish bias
-                rf_adjustment = 1.0 - ((rf_confidence - 50) / 150)  # Max -0.33
+            if rf_direction == 1:
+                rf_adjustment = 1.0 + ((rf_confidence - 50) / 150)
+            else:
+                rf_adjustment = 1.0 - ((rf_confidence - 50) / 150)
             
-            # Apply RF adjustment
             ensemble_change = base_ensemble * rf_adjustment
             
-            # FIXED: Trend strength can be bearish or bullish
             trend_multiplier = self._calculate_trend_strength(df_clean)
             ensemble_change *= trend_multiplier
             
             predicted_price = current_price + ensemble_change
             
-            # Ensure predicted_price is realistic
-            max_change_pct = 15  # Max 15% change
+            max_change_pct = 15
             max_change = current_price * (max_change_pct / 100)
             if abs(ensemble_change) > max_change:
                 ensemble_change = max_change if ensemble_change > 0 else -max_change
@@ -878,54 +855,21 @@ class ImprovedBitcoinPredictor:
                 category, df_clean
             )
             
-            # Confidence calculation
             confidence = self._calculate_confidence(
                 lstm_change, gb_change, rf_direction, rf_confidence,
                 quality_score, category
             )
             
-            # === DECISION: ALWAYS PREDICT or FILTER ===
-            
-            if always_predict:
-                # GUARANTEED: Always return prediction
-                # But mark quality level
-                if quality_score < 30:
-                    quality_level = "LOW"
-                elif quality_score < 60:
-                    quality_level = "MEDIUM"
-                else:
-                    quality_level = "HIGH"
-                
-                logger.debug(f"✅ Prediction: Confidence {confidence:.1f}% | Quality: {quality_level}")
-            else:
-                # Optional filtering mode
-                min_confidence = self._get_min_confidence(category)
-                
-                if confidence < min_confidence:
-                    logger.debug(f"⚠️ Confidence {confidence:.1f}% below {min_confidence:.1f}%")
-                    return None
-            
             # === BUILD PREDICTION ===
             
             trend = "CALL (Bullish)" if ensemble_change > 0 else "PUT (Bearish)"
             
-            # DEBUGGING: Log decision factors
-            logger.debug(f"   Decision factors:")
-            logger.debug(f"   - LSTM change: {lstm_change:+.2f}")
-            logger.debug(f"   - GB change: {gb_change:+.2f}")
-            logger.debug(f"   - RF direction: {'UP' if rf_direction == 1 else 'DOWN'} ({rf_confidence:.1f}%)")
-            logger.debug(f"   - Trend multiplier: {trend_multiplier:.3f}")
-            logger.debug(f"   - Final change: {ensemble_change:+.2f}")
-            logger.debug(f"   → Result: {trend}")
-            
-            # Calculate range
             volatility = df_clean['atr_14'].iloc[-1] if 'atr_14' in df_clean.columns else df_clean['price'].tail(20).std()
             range_multiplier = self._get_range_multiplier(category, time_factor)
             
             price_range_low = predicted_price - volatility * range_multiplier
             price_range_high = predicted_price + volatility * range_multiplier
             
-            # Model agreement
             lstm_dir = 1 if lstm_change > 0 else 0
             gb_dir = 1 if gb_change > 0 else 0
             all_agree = (lstm_dir == gb_dir == rf_direction)
@@ -988,37 +932,27 @@ class ImprovedBitcoinPredictor:
             return min(timeframe_minutes / 1440, 1.5)
     
     def _calculate_trend_strength(self, df: pd.DataFrame) -> float:
-        """
-        Calculate trend strength
-        FIXED: Can return NEGATIVE for bearish trends
-        """
+        """Calculate trend strength"""
         try:
             recent = df.tail(20)
             
-            # Price momentum (can be negative)
             price_momentum = (recent.iloc[-1]['price'] - recent.iloc[0]['price']) / recent.iloc[0]['price']
             
-            # RSI strength
             rsi = recent['rsi_14'].iloc[-1] if 'rsi_14' in recent.columns else 50
-            rsi_factor = (rsi - 50) / 50  # Negative if bearish, positive if bullish
+            rsi_factor = (rsi - 50) / 50
             
-            # ADX strength (trend strength, not direction)
             adx = recent['adx'].iloc[-1] if 'adx' in recent.columns else 20
             adx_strength = min(adx / 50, 1.0)
             
-            # Volume confirmation
             volume_ratio = recent['volume_ratio_20'].iloc[-1] if 'volume_ratio_20' in recent.columns else 1.0
             volume_strength = min(volume_ratio / 2, 1.0)
             
-            # FIXED: Combined strength that can be negative (bearish) or positive (bullish)
-            # Price momentum has most weight
             strength = (
-                price_momentum * 3.0 +      # Most important
-                rsi_factor * 1.0 +          # Direction indicator
-                adx_strength * 0.5          # Trend strength (always positive)
+                price_momentum * 3.0 +
+                rsi_factor * 1.0 +
+                adx_strength * 0.5
             ) / 4.5
             
-            # Multiplier: 0.7 to 1.3 (can push bearish or bullish)
             multiplier = 1.0 + (strength * 0.3)
             
             return max(min(multiplier, 1.3), 0.7)
@@ -1029,14 +963,10 @@ class ImprovedBitcoinPredictor:
     def _assess_quality(self, lstm_change: float, gb_change: float,
                        rf_direction: int, rf_confidence: float,
                        category: str, df: pd.DataFrame) -> float:
-        """
-        Assess prediction quality (0-100)
-        Used for reporting, not filtering
-        """
+        """Assess prediction quality (0-100)"""
         
         quality = 0
         
-        # Model agreement (+40)
         lstm_dir = 1 if lstm_change > 0 else 0
         gb_dir = 1 if gb_change > 0 else 0
         
@@ -1045,7 +975,6 @@ class ImprovedBitcoinPredictor:
         elif (lstm_dir == gb_dir) or (lstm_dir == rf_direction) or (gb_dir == rf_direction):
             quality += 20
         
-        # RF confidence (+20)
         if rf_confidence > 70:
             quality += 20
         elif rf_confidence > 60:
@@ -1053,23 +982,19 @@ class ImprovedBitcoinPredictor:
         elif rf_confidence > 50:
             quality += 10
         
-        # Market conditions (+20)
         try:
             recent = df.tail(20)
             
-            # Trend consistency
             if 'adx' in recent.columns:
                 adx = recent['adx'].iloc[-1]
                 if adx > 25:
                     quality += 10
             
-            # Volume
             if 'volume_ratio_20' in recent.columns:
                 vol_ratio = recent['volume_ratio_20'].iloc[-1]
                 if vol_ratio > 1.0:
                     quality += 5
             
-            # Volatility
             if 'volatility_20' in recent.columns:
                 vol = recent['volatility_20'].iloc[-1]
                 if vol < 0.03:
@@ -1077,7 +1002,6 @@ class ImprovedBitcoinPredictor:
         except:
             pass
         
-        # Magnitude consistency (+20)
         if abs(lstm_change) > 0 and abs(gb_change) > 0:
             ratio = min(abs(lstm_change), abs(gb_change)) / max(abs(lstm_change), abs(gb_change))
             if ratio > 0.7:
@@ -1090,20 +1014,13 @@ class ImprovedBitcoinPredictor:
     def _calculate_confidence(self, lstm_change: float, gb_change: float,
                              rf_direction: int, rf_confidence: float,
                              quality_score: float, category: str) -> float:
-        """
-        Calculate confidence (0-100)
-        Based on model agreement and quality
-        """
+        """Calculate confidence (0-100)"""
         
-        # Base confidence from quality
-        base = quality_score * 0.6  # Quality contributes 60%
-        
-        # RF confidence contributes 40%
-        rf_contribution = (rf_confidence - 50) * 0.8  # Scale to match
+        base = quality_score * 0.6
+        rf_contribution = (rf_confidence - 50) * 0.8
         
         confidence = base + rf_contribution
         
-        # Category adjustment
         category_bonus = {
             'ultra_short': 0,
             'short': 2,
@@ -1112,7 +1029,6 @@ class ImprovedBitcoinPredictor:
         }
         confidence += category_bonus.get(category, 0)
         
-        # Cap confidence
         max_confidence = {
             'ultra_short': 85,
             'short': 88,
@@ -1181,7 +1097,6 @@ class ImprovedBitcoinPredictor:
         try:
             path = MODEL_CONFIG['model_save_path']
             
-            # Try optimized models first
             if os.path.exists(f'{path}/lstm_model_optimized.keras'):
                 self.lstm_model = load_model(f'{path}/lstm_model_optimized.keras')
                 
@@ -1201,10 +1116,14 @@ class ImprovedBitcoinPredictor:
                 
                 self.is_trained = True
                 logger.info(f"✅ Optimized models loaded")
+                logger.info(f"   Features: {len(self.feature_columns)}")
                 return True
             
             # Try legacy models
             elif os.path.exists(f'{path}/lstm_model.keras'):
+                logger.warning("⚠️ Found legacy models - RETRAINING RECOMMENDED")
+                logger.warning("   Feature set may be inconsistent!")
+                
                 self.lstm_model = load_model(f'{path}/lstm_model.keras')
                 
                 with open(f'{path}/rf_model.pkl', 'rb') as f:
@@ -1222,7 +1141,7 @@ class ImprovedBitcoinPredictor:
                     self.last_training = data.get('last_training')
                 
                 self.is_trained = True
-                logger.info(f"✅ Legacy models loaded, will retrain")
+                logger.warning("⚠️ Legacy models loaded - RETRAIN IMMEDIATELY!")
                 return True
             
             else:
@@ -1231,6 +1150,8 @@ class ImprovedBitcoinPredictor:
             
         except Exception as e:
             logger.error(f"❌ Error loading models: {e}")
+            import traceback
+            traceback.print_exc()
             return False
     
     def needs_retraining(self) -> bool:
