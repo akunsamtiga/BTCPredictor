@@ -334,7 +334,7 @@ class ImprovedScheduler:
         return False
     
     def initialize_models(self) -> bool:
-        """Initialize ML models"""
+        """Initialize ML models with auto-retrain check"""
         try:
             logger.info("🔧 Initializing models...")
             
@@ -343,17 +343,56 @@ class ImprovedScheduler:
             if self.heartbeat:
                 self.heartbeat.send_status_change('loading_models', 'Loading ML models')
             
+            # Check if models exist
+            models_exist = os.path.exists(f"{MODEL_CONFIG['model_save_path']}/lstm_model_optimized.keras")
+            
+            if not models_exist:
+                logger.warning("⚠️  No models found - training required")
+                return self.train_models()
+            
             # Try to load existing models
             if self.predictor.load_models():
                 logger.info("✅ Loaded existing models")
                 
-                if self.predictor.needs_retraining():
-                    logger.info("⚠️ Models need retraining...")
-                    return self.train_models()
+                # Check model age
+                model_path = f"{MODEL_CONFIG['model_save_path']}/lstm_model_optimized.keras"
+                model_age_days = (time.time() - os.path.getmtime(model_path)) / 86400
                 
-                return True
+                logger.info(f"📅 Model age: {model_age_days:.1f} days")
+                
+                # Auto-retrain conditions
+                should_retrain = False
+                
+                # 1. Models older than 7 days
+                if model_age_days > 7:
+                    logger.warning(f"⚠️  Models are {model_age_days:.1f} days old (> 7 days)")
+                    should_retrain = True
+                
+                # 2. Check if using legacy models
+                if hasattr(self.predictor, 'feature_columns'):
+                    # Check for legacy features
+                    if 'sma_100' in self.predictor.feature_columns or 'sma_200' in self.predictor.feature_columns:
+                        logger.warning("⚠️  Legacy feature set detected")
+                        should_retrain = True
+                
+                # 3. Force retrain from environment variable
+                if os.getenv('FORCE_RETRAIN', 'false').lower() == 'true':
+                    logger.info("🔄 FORCE_RETRAIN enabled")
+                    should_retrain = True
+                
+                # 4. Check if needs retraining based on config
+                if self.predictor.needs_retraining():
+                    logger.warning("⚠️  Models need retraining (config threshold)")
+                    should_retrain = True
+                
+                if should_retrain:
+                    logger.info("🚀 Auto-retraining triggered...")
+                    return self.train_models()
+                else:
+                    logger.info("✅ Models are fresh and ready")
+                    return True
             else:
-                logger.info("📚 No models found, training new ones...")
+                logger.warning("❌ Failed to load models - training new ones")
                 return self.train_models()
                 
         except Exception as e:
